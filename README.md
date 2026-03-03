@@ -11,7 +11,16 @@ Modern Mosaics uses AI to generate, edit, and upscale images into high-quality a
 ### Frontend
 - **Framework**: Next.js 14 App Router (React)
 - **Styling**: Tailwind CSS
-- **Authentication**: NextAuth.js with Google authentication
+- **Authentication**: Firebase Authentication
+
+### Cloudinary Setup
+Add the cloud name to `.env.local`:
+
+```bash
+NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME=your_cloudinary_cloud_name
+```
+
+All URL helpers will throw an error if this variable is missing.
 
 ### Backend
 - **API Routes**: Next.js serverless API
@@ -69,6 +78,11 @@ The project follows the Next.js 14 App Router structure:
 ## Development Roadmap
 
 See [roadmap.md](roadmap.md) for detailed development plans and progress tracking.
+
+## Deployment
+
+- [DigitalOcean Runbook](docs/deploy/digitalocean.md)
+- [Environment Matrix](docs/deploy/env-matrix.md)
 
 ## License
 

@@ -1,26 +1,82 @@
+'use client'
+
 import React from 'react'
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 
 export function Footer() {
+  const currentYear = new Date().getFullYear()
+  const pathname = usePathname()
+
+  const links = [
+    { name: 'Home', href: '/' },
+    { name: 'Create', href: '/create' },
+    { name: 'Gallery', href: '/gallery' },
+    { name: 'Privacy', href: '/privacy' },
+    { name: 'Terms', href: '/terms' },
+  ]
+
   return (
-    <footer className="bg-white border-t border-gray-200">
-      <div className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-        <div className="md:flex md:items-center md:justify-between">
-          <div className="flex justify-center md:justify-start space-x-6">
-            <Link href="/" className="text-gray-400 hover:text-gray-500">
-              Home
-            </Link>
-            <Link href="/privacy" className="text-gray-400 hover:text-gray-500">
-              Privacy
-            </Link>
-            <Link href="/terms" className="text-gray-400 hover:text-gray-500">
-              Terms
-            </Link>
+    <footer className="relative bg-dark-900 border-t border-white/5">
+      {/* Gradient overlay */}
+      <div className="absolute inset-0 bg-gradient-to-t from-dark-950 to-transparent pointer-events-none" />
+      
+      <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="py-12">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 items-center">
+            {/* Brand */}
+            <div className="text-center md:text-left">
+              <Link href="/" className="inline-flex items-center gap-3 group">
+                <img 
+                  src="/modern-mosaics-logo.png" 
+                  alt="Modern Mosaics Logo" 
+                  className="h-10 w-auto opacity-80 group-hover:opacity-100 transition-opacity" 
+                />
+                <span className="text-lg font-display font-semibold text-dark-200 group-hover:text-white transition-colors">
+                  Modern <span className="text-brand-400">Mosaics</span>
+                </span>
+              </Link>
+              <p className="mt-3 text-sm text-dark-400 max-w-xs">
+                Premium photo prints and custom artwork, delivered to your door.
+              </p>
+            </div>
+
+            {/* Links */}
+            <div className="flex justify-center gap-6">
+              {links.map((link) => (
+                // Always keep href active for navigation consistency.
+                <Link 
+                  key={link.name}
+                  href={link.href} 
+                  aria-current={pathname === link.href ? 'page' : undefined}
+                  className={`text-sm transition-colors duration-200 ${
+                    pathname === link.href
+                      ? 'text-brand-400'
+                      : 'text-dark-400 hover:text-brand-400'
+                  }`}
+                >
+                  {link.name}
+                </Link>
+              ))}
+            </div>
+
+            {/* Copyright */}
+            <div className="text-center md:text-right">
+              <p className="text-sm text-dark-500">
+                &copy; {currentYear} Modern Mosaics
+              </p>
+              <p className="text-xs text-dark-600 mt-1">
+                All rights reserved
+              </p>
+            </div>
           </div>
-          <div className="mt-4 md:mt-0">
-            <p className="text-center text-sm text-gray-400">
-              &copy; {new Date().getFullYear()} Modern Mosaics. All rights reserved.
-            </p>
+        </div>
+
+        {/* Bottom bar */}
+        <div className="border-t border-white/5 py-4">
+          <div className="flex flex-col sm:flex-row justify-between items-center gap-4 text-xs text-dark-500">
+            <p>Premium photo printing · Worldwide shipping</p>
+            <p>Secure checkout via Stripe · Fulfillment via Gelato</p>
           </div>
         </div>
       </div>

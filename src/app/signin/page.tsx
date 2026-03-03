@@ -1,0 +1,255 @@
+'use client'
+
+import React, { useState } from 'react'
+import { useRouter } from 'next/navigation'
+import Image from 'next/image'
+import Link from 'next/link'
+import { 
+  signInWithGoogle, 
+  signInWithEmailPassword, 
+  createUserWithEmailPassword,
+  signInAnonymously,
+} from '@/lib/firebase'
+
+export default function AuthPage() {
+  const router = useRouter()
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [mode, setMode] = useState<'signin' | 'signup'>('signin')
+  
+  const handleGoogleSignIn = async () => {
+    setIsLoading(true)
+    setError(null)
+    try {
+      const result = await signInWithGoogle()
+      if (result.error) {
+        switch (result.error.code) {
+          case 'auth/popup-blocked':
+            setError('Please allow popups for this site and try again.')
+            break
+          case 'auth/popup-closed-by-user':
+            setError('Sign-in was cancelled. Please try again.')
+            break
+          default:
+            setError('Failed to sign in with Google. Please try again.')
+        }
+      } else if (result.user) {
+        router.push('/dashboard')
+      }
+    } catch (err) {
+      setError('An unexpected error occurred. Please try again.')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleGuestCheckout = async () => {
+    setIsLoading(true)
+    setError(null)
+
+    try {
+      const result = await signInAnonymously()
+      if (result.error) {
+        setError('Guest checkout is currently unavailable. Please try again.')
+      } else if (result.user) {
+        router.push('/create')
+      }
+    } catch {
+      setError('Guest checkout is currently unavailable. Please try again.')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+  
+  const handleEmailSignIn = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!email || !password) {
+      setError('Please enter both email and password')
+      return
+    }
+    
+    setIsLoading(true)
+    setError(null)
+    
+    try {
+      if (mode === 'signin') {
+        const result = await signInWithEmailPassword(email, password)
+        if (result.error) {
+          setError('Invalid email or password. Please try again.')
+        } else if (result.user) {
+          router.push('/dashboard')
+        }
+      } else {
+        const result = await createUserWithEmailPassword(email, password)
+        if (result.error) {
+          if (result.error.code === 'auth/email-already-in-use') {
+            setError('This email is already registered. Please try signing in.')
+          } else if (result.error.code === 'auth/weak-password') {
+            setError('Password is too weak. Please use a stronger password.')
+          } else {
+            setError('Failed to create account. Please try again.')
+          }
+        } else if (result.user) {
+          router.push('/dashboard')
+        }
+      }
+    } catch (err) {
+      setError('An unexpected error occurred')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+  
+  return (
+    <div className="min-h-screen bg-dark-900 flex items-center justify-center py-12 px-4">
+      {/* Background effects */}
+      <div className="fixed inset-0 bg-glow-gradient opacity-30 pointer-events-none" />
+      <div className="fixed top-20 left-10 w-72 h-72 bg-brand-500/10 rounded-full blur-3xl" />
+      <div className="fixed bottom-20 right-10 w-96 h-96 bg-gold-500/5 rounded-full blur-3xl" />
+      
+      <div className="relative w-full max-w-md">
+        {/* Logo */}
+        <div className="text-center mb-8">
+          <Link href="/" className="inline-flex items-center gap-3">
+            <Image 
+              src="/modern-mosaics-logo.png" 
+              alt="Modern Mosaics" 
+              width={48} 
+              height={48}
+              className="opacity-90"
+            />
+            <span className="text-2xl font-display font-semibold text-white">
+              Modern <span className="text-brand-400">Mosaics</span>
+            </span>
+          </Link>
+        </div>
+
+        {/* Auth Card */}
+        <div className="glass-card p-8">
+          <h1 className="text-2xl font-display font-bold text-white text-center mb-2">
+            {mode === 'signin' ? 'Welcome Back' : 'Create Account'}
+          </h1>
+          <p className="text-dark-400 text-center mb-8">
+            {mode === 'signin' 
+              ? 'Sign in to continue creating' 
+              : 'Start your creative journey'}
+          </p>
+          
+          {error && (
+            <div className="mb-6 p-4 rounded-xl bg-red-500/10 border border-red-500/20">
+              <p className="text-red-400 text-sm">{error}</p>
+            </div>
+          )}
+          
+          {/* Google Sign In */}
+          <button
+            onClick={handleGoogleSignIn}
+            disabled={isLoading}
+            className="w-full flex items-center justify-center gap-3 px-6 py-3 rounded-xl bg-white text-dark-800 font-medium hover:bg-dark-50 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed mb-6"
+          >
+            {isLoading ? (
+              <div className="w-5 h-5 border-2 border-dark-400 border-t-dark-800 rounded-full animate-spin" />
+            ) : (
+              <Image src="/google-icon.svg" alt="Google" width={20} height={20} />
+            )}
+            {isLoading ? 'Signing in...' : 'Continue with Google'}
+          </button>
+
+          <button
+            onClick={handleGuestCheckout}
+            disabled={isLoading}
+            className="w-full px-6 py-3 rounded-xl border border-white/15 text-dark-200 hover:text-white hover:border-white/30 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed mb-6"
+          >
+            Continue as Guest
+          </button>
+          
+          {/* Divider */}
+          <div className="relative my-6">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-white/10" />
+            </div>
+            <div className="relative flex justify-center text-sm">
+              <span className="px-4 bg-dark-800 text-dark-500">or continue with email</span>
+            </div>
+          </div>
+          
+          {/* Email Form */}
+          <form onSubmit={handleEmailSignIn} className="space-y-4">
+            <div>
+              <label htmlFor="email" className="block text-sm font-medium text-dark-300 mb-2">
+                Email
+              </label>
+              <input
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="input-premium"
+                placeholder="you@example.com"
+                required
+              />
+            </div>
+            
+            <div>
+              <label htmlFor="password" className="block text-sm font-medium text-dark-300 mb-2">
+                Password
+              </label>
+              <input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="input-premium"
+                placeholder="••••••••"
+                required
+              />
+            </div>
+            
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="btn-primary w-full py-3 disabled:opacity-50"
+            >
+              {isLoading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  {mode === 'signin' ? 'Signing in...' : 'Creating account...'}
+                </span>
+              ) : (
+                mode === 'signin' ? 'Sign In' : 'Create Account'
+              )}
+            </button>
+          </form>
+          
+          {/* Toggle Mode */}
+          <div className="mt-6 text-center">
+            <button 
+              onClick={() => setMode(mode === 'signin' ? 'signup' : 'signin')}
+              className="text-sm text-dark-400 hover:text-brand-400 transition-colors"
+            >
+              {mode === 'signin' 
+                ? "Don't have an account? Sign up" 
+                : "Already have an account? Sign in"}
+            </button>
+          </div>
+          
+          {/* Account clarity */}
+          <div className="mt-6 pt-6 border-t border-white/5">
+            <p className="text-xs text-dark-500 text-center">
+              Sign in is required to keep your gallery and orders private.
+            </p>
+          </div>
+        </div>
+        
+        {/* Back to home */}
+        <div className="text-center mt-8">
+          <Link href="/" className="text-sm text-dark-500 hover:text-dark-300 transition-colors">
+            ← Back to Home
+          </Link>
+        </div>
+      </div>
+    </div>
+  )
+}

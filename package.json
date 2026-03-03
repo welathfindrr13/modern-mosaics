@@ -9,22 +9,45 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@google/genai": "^1.32.0",
+    "@hookform/resolvers": "^5.0.1",
+    "@stripe/stripe-js": "^7.3.0",
+    "@types/js-cookie": "^3.0.6",
+    "cloudinary": "^2.6.0",
+    "cloudinary-core": "^2.13.1",
+    "firebase": "^11.6.1",
+    "firebase-admin": "^13.4.0",
+    "heic2any": "^0.0.4",
+    "js-cookie": "^3.0.5",
+    "konva": "^9.3.20",
     "next": "^14.0.0",
-    "next-auth": "^4.24.11",
-    "openai": "^4.96.2",
+    "next-cloudinary": "^6.16.0",
+    "openai": "^4.26.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "tailwind-merge": "^3.2.0"
+    "react-dropzone": "^14.3.8",
+    "react-hook-form": "^7.56.2",
+    "react-konva": "18.2.10",
+    "replicate": "^1.0.1",
+    "sharp": "^0.34.2",
+    "streamifier": "^0.1.1",
+    "stripe": "^18.1.1",
+    "tailwind-merge": "^3.2.0",
+    "use-image": "^1.1.4",
+    "zod": "^3.24.4"
   },
   "devDependencies": {
     "@types/node": "^20.8.0",
     "@types/react": "^18.2.25",
     "@types/react-dom": "^18.2.10",
+    "@types/streamifier": "^0.1.2",
     "autoprefixer": "^10.4.16",
     "eslint": "^8.51.0",
     "eslint-config-next": "^14.0.0",
+    "firebase-tools": "^14.4.0",
     "postcss": "^8.4.31",
     "tailwindcss": "^3.3.3",
-    "typescript": "^5.2.2"
+    "typescript": "^5.2.2",
+    "vitest": "^4.0.18"
   }
 }

@@ -2,11 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerStripe } from '@/lib/stripe';
 import {
   getOrderByStripeSessionId,
+  getOrderFromFulfillmentState,
   getSessionFulfillmentState,
-  toLocalOrderFromStoredOrder,
 } from '@/lib/checkout-fulfillment';
 import { matchesConfirmationNonce, isValidConfirmationNonce } from '@/lib/confirmation-nonce';
-import { adminOrderOperations } from '@/utils/firestore-admin';
 
 /**
  * Read-only checkout status endpoint.
@@ -50,37 +49,10 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const existingOrder = await getOrderByStripeSessionId(cleanSessionId);
-    if (existingOrder) {
-      return NextResponse.json({
-        success: true,
-        fulfilled: true,
-        idempotent: true,
-        order: {
-          id: existingOrder.id,
-          referenceId: existingOrder.referenceId,
-          status: existingOrder.status,
-          created: existingOrder.createdAt,
-        },
-        localOrder: existingOrder,
-      });
-    }
-
     const fulfillmentState = await getSessionFulfillmentState(cleanSessionId);
     if (fulfillmentState?.status === 'fulfilled') {
-      let fallbackOrder = null;
-      if (fulfillmentState.userUid && fulfillmentState.orderDocId) {
-        fallbackOrder = await adminOrderOperations.getById(fulfillmentState.userUid, fulfillmentState.orderDocId);
-      }
-      if (!fallbackOrder && fulfillmentState.userUid && fulfillmentState.gelatoOrderId) {
-        fallbackOrder = await adminOrderOperations.getByUserAndGelatoOrderId(
-          fulfillmentState.userUid,
-          fulfillmentState.gelatoOrderId
-        );
-      }
-
-      if (fallbackOrder) {
-        const localOrder = toLocalOrderFromStoredOrder(fallbackOrder);
+      const localOrder = await getOrderFromFulfillmentState(cleanSessionId);
+      if (localOrder) {
         return NextResponse.json({
           success: true,
           fulfilled: true,
@@ -124,6 +96,23 @@ export async function GET(request: NextRequest) {
         },
         { status: 202 }
       );
+    }
+
+    // Legacy fallback for historical orders created before fulfillment-state tracking.
+    const existingOrder = await getOrderByStripeSessionId(cleanSessionId);
+    if (existingOrder) {
+      return NextResponse.json({
+        success: true,
+        fulfilled: true,
+        idempotent: true,
+        order: {
+          id: existingOrder.id,
+          referenceId: existingOrder.referenceId,
+          status: existingOrder.status,
+          created: existingOrder.createdAt,
+        },
+        localOrder: existingOrder,
+      });
     }
 
     const paymentStatus = session.payment_status;

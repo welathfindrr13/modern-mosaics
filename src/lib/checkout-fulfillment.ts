@@ -253,7 +253,12 @@ export async function getOrderByStripeSessionId(stripeSessionId: string): Promis
     const existing = await adminOrderOperations.getByStripeSessionId(stripeSessionId);
     return existing?.order ? toLocalOrderFromStoredOrder(existing.order) : null;
   } catch (error) {
-    console.error('[FULFILLMENT] getOrderByStripeSessionId lookup failed:', error);
+    const err = error as { code?: string | number; message?: string };
+    console.warn(
+      '[FULFILLMENT] getOrderByStripeSessionId lookup failed:',
+      err?.code ?? 'unknown',
+      err?.message ?? 'unknown'
+    );
     return null;
   }
 }
@@ -265,6 +270,30 @@ export async function getSessionFulfillmentState(rawSessionId: string): Promise<
   return snap.data() as SessionFulfillmentRecord;
 }
 
+export async function getOrderFromFulfillmentState(rawSessionId: string): Promise<LocalOrder | null> {
+  const state = await getSessionFulfillmentState(rawSessionId);
+  if (!state?.userUid) return null;
+
+  if (state.orderDocId) {
+    const orderById = await adminOrderOperations.getById(state.userUid, state.orderDocId);
+    if (orderById) {
+      return toLocalOrderFromStoredOrder(orderById);
+    }
+  }
+
+  if (state.gelatoOrderId) {
+    const orderByGelatoId = await adminOrderOperations.getByUserAndGelatoOrderId(
+      state.userUid,
+      state.gelatoOrderId
+    );
+    if (orderByGelatoId) {
+      return toLocalOrderFromStoredOrder(orderByGelatoId);
+    }
+  }
+
+  return null;
+}
+
 export async function fulfillPaidCheckoutSession(
   rawSessionId: string,
   options?: { fallbackUserUid?: string | null; stripeEventId?: string | null }
@@ -274,17 +303,17 @@ export async function fulfillPaidCheckoutSession(
     nonRetryable('INVALID_SESSION_ID', 'Invalid Stripe session ID');
   }
 
-  const existingOrder = await getOrderByStripeSessionId(stripeSessionId);
-  if (existingOrder) {
+  const stateResolvedOrder = await getOrderFromFulfillmentState(stripeSessionId);
+  if (stateResolvedOrder) {
     return {
       status: 'fulfilled',
       idempotent: true,
-      localOrder: existingOrder,
+      localOrder: stateResolvedOrder,
       order: {
-        id: existingOrder.id,
-        referenceId: existingOrder.referenceId,
-        status: existingOrder.status,
-        created: existingOrder.createdAt,
+        id: stateResolvedOrder.id,
+        referenceId: stateResolvedOrder.referenceId,
+        status: stateResolvedOrder.status,
+        created: stateResolvedOrder.createdAt,
       },
     };
   }
@@ -294,7 +323,7 @@ export async function fulfillPaidCheckoutSession(
     return { status: 'processing' };
   }
   if (leaseState === 'fulfilled') {
-    const order = await getOrderByStripeSessionId(stripeSessionId);
+    const order = await getOrderFromFulfillmentState(stripeSessionId);
     if (order) {
       return {
         status: 'fulfilled',
@@ -307,28 +336,6 @@ export async function fulfillPaidCheckoutSession(
           created: order.createdAt,
         },
       };
-    }
-
-    const state = await getSessionFulfillmentState(stripeSessionId);
-    if (state?.userUid && state?.gelatoOrderId) {
-      const fallbackOrder = await adminOrderOperations.getByUserAndGelatoOrderId(
-        state.userUid,
-        state.gelatoOrderId
-      );
-      if (fallbackOrder) {
-        const localOrder = toLocalOrderFromStoredOrder(fallbackOrder);
-        return {
-          status: 'fulfilled',
-          idempotent: true,
-          localOrder,
-          order: {
-            id: localOrder.id,
-            referenceId: localOrder.referenceId,
-            status: localOrder.status,
-            created: localOrder.createdAt,
-          },
-        };
-      }
     }
     return { status: 'processing' };
   }

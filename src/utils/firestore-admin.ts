@@ -288,7 +288,8 @@ export const adminOrderOperations = {
       const ordersQuery = adminDb.collectionGroup('orders').where('gelatoOrderId', '==', gelatoOrderId);
       querySnapshot = await ordersQuery.get();
     } catch (error) {
-      console.error('[FIRESTORE_ADMIN] getByGelatoOrderId query failed:', error);
+      const err = error as { code?: string | number; message?: string };
+      console.warn('[FIRESTORE_ADMIN] getByGelatoOrderId query failed:', err?.code ?? 'unknown', err?.message ?? 'unknown');
       return null;
     }
     
@@ -315,7 +316,8 @@ export const adminOrderOperations = {
       const ordersQuery = adminDb.collectionGroup('orders').where('stripeSessionId', '==', stripeSessionId);
       querySnapshot = await ordersQuery.get();
     } catch (error) {
-      console.error('[FIRESTORE_ADMIN] getByStripeSessionId query failed:', error);
+      const err = error as { code?: string | number; message?: string };
+      console.warn('[FIRESTORE_ADMIN] getByStripeSessionId query failed:', err?.code ?? 'unknown', err?.message ?? 'unknown');
       return null;
     }
     
@@ -341,7 +343,8 @@ export const adminOrderOperations = {
       const ordersQuery = adminDb.collectionGroup('orders').where('referenceId', '==', referenceId);
       querySnapshot = await ordersQuery.get();
     } catch (error) {
-      console.error('[FIRESTORE_ADMIN] getByReferenceId query failed:', error);
+      const err = error as { code?: string | number; message?: string };
+      console.warn('[FIRESTORE_ADMIN] getByReferenceId query failed:', err?.code ?? 'unknown', err?.message ?? 'unknown');
       return null;
     }
 

@@ -4,12 +4,14 @@ import React, { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Image from 'next/image'
 import Link from 'next/link'
+import type { User } from 'firebase/auth'
 import { 
   signInWithGoogle, 
   signInWithEmailPassword, 
   createUserWithEmailPassword,
   signInAnonymously,
 } from '@/lib/firebase'
+import { clientCookieUtils } from '@/lib/auth-cookies'
 
 export default function AuthPage() {
   const router = useRouter()
@@ -18,6 +20,13 @@ export default function AuthPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [mode, setMode] = useState<'signin' | 'signup'>('signin')
+
+  const completeAuthNavigation = async (user: User, destination: '/dashboard' | '/create') => {
+    // Ensure auth cookies exist before navigating to server-guarded routes.
+    await clientCookieUtils.setAuthCookie(user)
+    router.replace(destination)
+    router.refresh()
+  }
   
   const handleGoogleSignIn = async () => {
     setIsLoading(true)
@@ -36,7 +45,7 @@ export default function AuthPage() {
             setError('Failed to sign in with Google. Please try again.')
         }
       } else if (result.user) {
-        router.push('/dashboard')
+        await completeAuthNavigation(result.user, '/dashboard')
       }
     } catch (err) {
       setError('An unexpected error occurred. Please try again.')
@@ -54,7 +63,7 @@ export default function AuthPage() {
       if (result.error) {
         setError('Guest checkout is currently unavailable. Please try again.')
       } else if (result.user) {
-        router.push('/create')
+        await completeAuthNavigation(result.user, '/create')
       }
     } catch {
       setError('Guest checkout is currently unavailable. Please try again.')
@@ -79,7 +88,7 @@ export default function AuthPage() {
         if (result.error) {
           setError('Invalid email or password. Please try again.')
         } else if (result.user) {
-          router.push('/dashboard')
+          await completeAuthNavigation(result.user, '/dashboard')
         }
       } else {
         const result = await createUserWithEmailPassword(email, password)
@@ -92,7 +101,7 @@ export default function AuthPage() {
             setError('Failed to create account. Please try again.')
           }
         } else if (result.user) {
-          router.push('/dashboard')
+          await completeAuthNavigation(result.user, '/dashboard')
         }
       }
     } catch (err) {

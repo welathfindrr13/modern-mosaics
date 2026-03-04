@@ -26,19 +26,16 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const orderLookup =
-      (await adminOrderOperations.getByGelatoOrderId(orderId)) ||
-      (await adminOrderOperations.getByReferenceId(orderId));
+    const orderByGelatoId = await adminOrderOperations.getByUserAndGelatoOrderId(user.uid, orderId);
+    const orderByReference = orderByGelatoId
+      ? null
+      : await adminOrderOperations.getByUserAndReferenceId(user.uid, orderId);
+    const orderRecord = orderByGelatoId || orderByReference;
 
-    if (!orderLookup) {
+    if (!orderRecord) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 });
     }
-
-    if (orderLookup.userId !== user.uid) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-    }
-
-    const gelatoOrderId = orderLookup.order.gelatoOrderId || orderId;
+    const gelatoOrderId = orderRecord.gelatoOrderId || orderId;
 
     // Initialize Gelato client
     const gelatoClient = getGelatoClient();
@@ -106,19 +103,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing order ID' }, { status: 400 });
     }
     
-    const orderLookup =
-      (await adminOrderOperations.getByGelatoOrderId(orderId)) ||
-      (await adminOrderOperations.getByReferenceId(orderId));
+    const orderByGelatoId = await adminOrderOperations.getByUserAndGelatoOrderId(user.uid, orderId);
+    const orderByReference = orderByGelatoId
+      ? null
+      : await adminOrderOperations.getByUserAndReferenceId(user.uid, orderId);
+    const orderRecord = orderByGelatoId || orderByReference;
 
-    if (!orderLookup) {
+    if (!orderRecord) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 });
     }
-
-    if (orderLookup.userId !== user.uid) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-    }
-
-    const gelatoOrderId = orderLookup.order.gelatoOrderId || orderId;
+    const gelatoOrderId = orderRecord.gelatoOrderId || orderId;
 
     // Initialize Gelato client
     const gelatoClient = getGelatoClient();

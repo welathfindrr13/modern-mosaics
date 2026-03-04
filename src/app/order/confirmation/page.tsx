@@ -89,7 +89,16 @@ export default function OrderConfirmationPage() {
 
       const response = await fetch(url.toString());
       if (!response.ok) {
-        throw new Error(`Payment verification failed: ${response.status}`);
+        let detail = `Payment verification failed: ${response.status}`;
+        try {
+          const payload = await response.json();
+          if (payload?.error) {
+            detail = payload.code ? `${payload.error} (${payload.code})` : payload.error;
+          }
+        } catch {
+          // Ignore JSON parsing errors for non-JSON responses.
+        }
+        throw new Error(detail);
       }
 
       const data = await response.json();

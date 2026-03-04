@@ -20,6 +20,19 @@ export type SessionFulfillmentState =
   | 'failed_retryable'
   | 'failed_non_retryable';
 
+export type SessionFulfillmentRecord = {
+  status?: SessionFulfillmentState;
+  fulfillmentState?: SessionFulfillmentState;
+  userUid?: string;
+  gelatoOrderId?: string;
+  orderDocId?: string;
+  stripeSessionId?: string;
+  stripePaymentStatus?: string;
+  lastErrorCode?: string;
+  lastErrorMessage?: string;
+  updatedAtMs?: number;
+};
+
 type FulfillmentLeaseState = 'acquired' | 'processing' | 'fulfilled';
 
 export type FulfillmentResult =
@@ -236,8 +249,20 @@ export function toLocalOrderFromStoredOrder(storedOrder: any): LocalOrder {
 }
 
 export async function getOrderByStripeSessionId(stripeSessionId: string): Promise<LocalOrder | null> {
-  const existing = await adminOrderOperations.getByStripeSessionId(stripeSessionId);
-  return existing?.order ? toLocalOrderFromStoredOrder(existing.order) : null;
+  try {
+    const existing = await adminOrderOperations.getByStripeSessionId(stripeSessionId);
+    return existing?.order ? toLocalOrderFromStoredOrder(existing.order) : null;
+  } catch (error) {
+    console.error('[FULFILLMENT] getOrderByStripeSessionId lookup failed:', error);
+    return null;
+  }
+}
+
+export async function getSessionFulfillmentState(rawSessionId: string): Promise<SessionFulfillmentRecord | null> {
+  const stripeSessionId = sanitizeSessionId(rawSessionId);
+  const snap = await adminDb.collection(SESSION_FULFILLMENT_COLLECTION).doc(stripeSessionId).get();
+  if (!snap.exists) return null;
+  return snap.data() as SessionFulfillmentRecord;
 }
 
 export async function fulfillPaidCheckoutSession(
@@ -282,6 +307,28 @@ export async function fulfillPaidCheckoutSession(
           created: order.createdAt,
         },
       };
+    }
+
+    const state = await getSessionFulfillmentState(stripeSessionId);
+    if (state?.userUid && state?.gelatoOrderId) {
+      const fallbackOrder = await adminOrderOperations.getByUserAndGelatoOrderId(
+        state.userUid,
+        state.gelatoOrderId
+      );
+      if (fallbackOrder) {
+        const localOrder = toLocalOrderFromStoredOrder(fallbackOrder);
+        return {
+          status: 'fulfilled',
+          idempotent: true,
+          localOrder,
+          order: {
+            id: localOrder.id,
+            referenceId: localOrder.referenceId,
+            status: localOrder.status,
+            created: localOrder.createdAt,
+          },
+        };
+      }
     }
     return { status: 'processing' };
   }
@@ -452,8 +499,9 @@ export async function fulfillPaidCheckoutSession(
     createdAt: orderResponse.created || new Date().toISOString(),
   };
 
+  let orderDocId: string;
   try {
-    await adminOrderOperations.create(userUid, {
+    orderDocId = await adminOrderOperations.create(userUid, {
       referenceId: orderResponse.orderReferenceId || orderReferenceId,
       gelatoOrderId,
       stripeSessionId,
@@ -497,6 +545,7 @@ export async function fulfillPaidCheckoutSession(
     fulfillmentState: 'fulfilled',
     gelatoOrderId,
     userUid,
+    orderDocId,
     stripeEventId: options?.stripeEventId || null,
     stripeSessionId,
     stripePaymentStatus: session.payment_status,

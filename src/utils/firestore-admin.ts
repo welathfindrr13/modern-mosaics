@@ -283,8 +283,14 @@ export const adminOrderOperations = {
    */
   async getByGelatoOrderId(gelatoOrderId: string): Promise<{ userId: string; order: ClientOrder } | null> {
     // Note: This requires a composite index on gelatoOrderId
-    const ordersQuery = adminDb.collectionGroup('orders').where('gelatoOrderId', '==', gelatoOrderId);
-    const querySnapshot = await ordersQuery.get();
+    let querySnapshot: admin.firestore.QuerySnapshot;
+    try {
+      const ordersQuery = adminDb.collectionGroup('orders').where('gelatoOrderId', '==', gelatoOrderId);
+      querySnapshot = await ordersQuery.get();
+    } catch (error) {
+      console.error('[FIRESTORE_ADMIN] getByGelatoOrderId query failed:', error);
+      return null;
+    }
     
     if (!querySnapshot.empty) {
       const doc = querySnapshot.docs[0];
@@ -304,8 +310,14 @@ export const adminOrderOperations = {
    */
   async getByStripeSessionId(stripeSessionId: string): Promise<{ userId: string; order: ClientOrder } | null> {
     // Note: This requires a composite index on stripeSessionId
-    const ordersQuery = adminDb.collectionGroup('orders').where('stripeSessionId', '==', stripeSessionId);
-    const querySnapshot = await ordersQuery.get();
+    let querySnapshot: admin.firestore.QuerySnapshot;
+    try {
+      const ordersQuery = adminDb.collectionGroup('orders').where('stripeSessionId', '==', stripeSessionId);
+      querySnapshot = await ordersQuery.get();
+    } catch (error) {
+      console.error('[FIRESTORE_ADMIN] getByStripeSessionId query failed:', error);
+      return null;
+    }
     
     if (!querySnapshot.empty) {
       const doc = querySnapshot.docs[0];
@@ -324,8 +336,14 @@ export const adminOrderOperations = {
    * Find order by internal/external reference ID
    */
   async getByReferenceId(referenceId: string): Promise<{ userId: string; order: ClientOrder } | null> {
-    const ordersQuery = adminDb.collectionGroup('orders').where('referenceId', '==', referenceId);
-    const querySnapshot = await ordersQuery.get();
+    let querySnapshot: admin.firestore.QuerySnapshot;
+    try {
+      const ordersQuery = adminDb.collectionGroup('orders').where('referenceId', '==', referenceId);
+      querySnapshot = await ordersQuery.get();
+    } catch (error) {
+      console.error('[FIRESTORE_ADMIN] getByReferenceId query failed:', error);
+      return null;
+    }
 
     if (!querySnapshot.empty) {
       const doc = querySnapshot.docs[0];
@@ -338,6 +356,42 @@ export const adminOrderOperations = {
       }
     }
     return null;
+  },
+
+  async getByUserAndGelatoOrderId(userId: string, gelatoOrderId: string): Promise<ClientOrder | null> {
+    try {
+      const query = adminDb
+        .collection('users')
+        .doc(userId)
+        .collection('orders')
+        .where('gelatoOrderId', '==', gelatoOrderId)
+        .limit(1);
+      const snap = await query.get();
+      if (snap.empty) return null;
+      const doc = snap.docs[0];
+      return convertFirestoreOrder(doc.id, doc.data() as FirestoreOrder);
+    } catch (error) {
+      console.error('[FIRESTORE_ADMIN] getByUserAndGelatoOrderId query failed:', error);
+      return null;
+    }
+  },
+
+  async getByUserAndReferenceId(userId: string, referenceId: string): Promise<ClientOrder | null> {
+    try {
+      const query = adminDb
+        .collection('users')
+        .doc(userId)
+        .collection('orders')
+        .where('referenceId', '==', referenceId)
+        .limit(1);
+      const snap = await query.get();
+      if (snap.empty) return null;
+      const doc = snap.docs[0];
+      return convertFirestoreOrder(doc.id, doc.data() as FirestoreOrder);
+    } catch (error) {
+      console.error('[FIRESTORE_ADMIN] getByUserAndReferenceId query failed:', error);
+      return null;
+    }
   },
 };
 

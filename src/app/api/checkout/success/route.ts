@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerStripe } from '@/lib/stripe';
-import { getOrderByStripeSessionId } from '@/lib/checkout-fulfillment';
+import {
+  getOrderByStripeSessionId,
+  getSessionFulfillmentState,
+  toLocalOrderFromStoredOrder,
+} from '@/lib/checkout-fulfillment';
 import { matchesConfirmationNonce, isValidConfirmationNonce } from '@/lib/confirmation-nonce';
+import { adminOrderOperations } from '@/utils/firestore-admin';
 
 /**
  * Read-only checkout status endpoint.
@@ -61,6 +66,66 @@ export async function GET(request: NextRequest) {
       });
     }
 
+    const fulfillmentState = await getSessionFulfillmentState(cleanSessionId);
+    if (fulfillmentState?.status === 'fulfilled') {
+      let fallbackOrder = null;
+      if (fulfillmentState.userUid && fulfillmentState.orderDocId) {
+        fallbackOrder = await adminOrderOperations.getById(fulfillmentState.userUid, fulfillmentState.orderDocId);
+      }
+      if (!fallbackOrder && fulfillmentState.userUid && fulfillmentState.gelatoOrderId) {
+        fallbackOrder = await adminOrderOperations.getByUserAndGelatoOrderId(
+          fulfillmentState.userUid,
+          fulfillmentState.gelatoOrderId
+        );
+      }
+
+      if (fallbackOrder) {
+        const localOrder = toLocalOrderFromStoredOrder(fallbackOrder);
+        return NextResponse.json({
+          success: true,
+          fulfilled: true,
+          idempotent: true,
+          order: {
+            id: localOrder.id,
+            referenceId: localOrder.referenceId,
+            status: localOrder.status,
+            created: localOrder.createdAt,
+          },
+          localOrder,
+        });
+      }
+    }
+
+    if (fulfillmentState?.status === 'failed_non_retryable') {
+      return NextResponse.json(
+        {
+          success: false,
+          fulfilled: false,
+          code: fulfillmentState.lastErrorCode || 'FULFILLMENT_FAILED',
+          error: fulfillmentState.lastErrorMessage || 'Order fulfillment failed. Support has been notified.',
+        },
+        { status: 409 }
+      );
+    }
+
+    if (
+      fulfillmentState?.status === 'processing' ||
+      fulfillmentState?.status === 'pending_payment' ||
+      fulfillmentState?.status === 'failed_retryable'
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          fulfilled: false,
+          pending: true,
+          code: 'FULFILLMENT_PENDING',
+          paymentStatus: session.payment_status,
+          pollAfterMs: 3000,
+        },
+        { status: 202 }
+      );
+    }
+
     const paymentStatus = session.payment_status;
 
     if (paymentStatus !== 'paid') {
@@ -90,6 +155,12 @@ export async function GET(request: NextRequest) {
     );
   } catch (error: any) {
     console.error('[CHECKOUT_SUCCESS] Read-only status lookup failed:', error?.message || error);
+    if (error?.type === 'StripeInvalidRequestError') {
+      return NextResponse.json(
+        { error: 'Invalid checkout session.', code: 'INVALID_SESSION' },
+        { status: 400 }
+      );
+    }
     return NextResponse.json(
       { error: 'Failed to process order status. Please try again.', code: 'CHECKOUT_ERROR' },
       { status: 500 }

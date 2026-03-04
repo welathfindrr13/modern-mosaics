@@ -245,9 +245,39 @@ export async function POST(request: NextRequest) {
     console.info(`[CHECKOUT] Session create request accepted (${productType}/${sizeKey}, ${currency})`);
 
     const confirmationNonce = generateConfirmationNonce();
-    const successUrl = new URL(
-      process.env.STRIPE_SUCCESS_URL || 'http://localhost:3000/order/confirmation'
-    );
+    const isProduction = process.env.NODE_ENV === 'production';
+    const configuredSuccessUrl = process.env.STRIPE_SUCCESS_URL;
+    const configuredCancelUrl = process.env.STRIPE_CANCEL_URL;
+
+    if (isProduction && (!configuredSuccessUrl || !configuredCancelUrl)) {
+      console.error('[CHECKOUT] Missing STRIPE_SUCCESS_URL or STRIPE_CANCEL_URL in production');
+      return NextResponse.json(
+        { error: 'Checkout URL configuration missing.', code: 'CHECKOUT_CONFIG_ERROR' },
+        { status: 500 }
+      );
+    }
+
+    let successUrl: URL;
+    let cancelUrl: URL;
+    try {
+      successUrl = new URL(configuredSuccessUrl || 'http://localhost:3000/order/confirmation');
+      cancelUrl = new URL(configuredCancelUrl || 'http://localhost:3000/order');
+    } catch {
+      console.error('[CHECKOUT] Invalid STRIPE_SUCCESS_URL or STRIPE_CANCEL_URL');
+      return NextResponse.json(
+        { error: 'Checkout URL configuration invalid.', code: 'CHECKOUT_CONFIG_ERROR' },
+        { status: 500 }
+      );
+    }
+
+    if (isProduction && (successUrl.hostname === 'localhost' || cancelUrl.hostname === 'localhost')) {
+      console.error('[CHECKOUT] Localhost checkout URL configured in production');
+      return NextResponse.json(
+        { error: 'Checkout URL configuration invalid for production.', code: 'CHECKOUT_CONFIG_ERROR' },
+        { status: 500 }
+      );
+    }
+
     successUrl.searchParams.set('session_id', '{CHECKOUT_SESSION_ID}');
     successUrl.searchParams.set('confirmation_nonce', confirmationNonce);
 
@@ -258,7 +288,7 @@ export async function POST(request: NextRequest) {
       ...(checkoutEmail ? { customer_email: checkoutEmail } : {}),
       line_items: lineItems,
       success_url: successUrl.toString(),
-      cancel_url: process.env.STRIPE_CANCEL_URL || 'http://localhost:3000/order',
+      cancel_url: cancelUrl.toString(),
       metadata: {
         // =================================================================
         // FULL AUDIT TRAIL for currency conversion verification

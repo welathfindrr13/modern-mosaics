@@ -257,10 +257,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    let successUrl: URL;
+    let successUrlObj: URL;
     let cancelUrl: URL;
     try {
-      successUrl = new URL(configuredSuccessUrl || 'http://localhost:3000/order/confirmation');
+      successUrlObj = new URL(configuredSuccessUrl || 'http://localhost:3000/order/confirmation');
       cancelUrl = new URL(configuredCancelUrl || 'http://localhost:3000/order');
     } catch {
       console.error('[CHECKOUT] Invalid STRIPE_SUCCESS_URL or STRIPE_CANCEL_URL');
@@ -270,7 +270,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (isProduction && (successUrl.hostname === 'localhost' || cancelUrl.hostname === 'localhost')) {
+    if (isProduction && (successUrlObj.hostname === 'localhost' || cancelUrl.hostname === 'localhost')) {
       console.error('[CHECKOUT] Localhost checkout URL configured in production');
       return NextResponse.json(
         { error: 'Checkout URL configuration invalid for production.', code: 'CHECKOUT_CONFIG_ERROR' },
@@ -278,8 +278,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    successUrl.searchParams.set('session_id', '{CHECKOUT_SESSION_ID}');
-    successUrl.searchParams.set('confirmation_nonce', confirmationNonce);
+    // Keep Stripe's session placeholder unencoded, otherwise it may not be substituted.
+    successUrlObj.searchParams.delete('session_id');
+    successUrlObj.searchParams.set('confirmation_nonce', confirmationNonce);
+    const successQuery = successUrlObj.searchParams.toString();
+    const successUrl = `${successUrlObj.origin}${successUrlObj.pathname}?${successQuery}&session_id={CHECKOUT_SESSION_ID}${successUrlObj.hash}`;
 
     // Create the checkout session
     const checkoutSession = await stripe.checkout.sessions.create({
@@ -287,7 +290,7 @@ export async function POST(request: NextRequest) {
       client_reference_id: user.uid,
       ...(checkoutEmail ? { customer_email: checkoutEmail } : {}),
       line_items: lineItems,
-      success_url: successUrl.toString(),
+      success_url: successUrl,
       cancel_url: cancelUrl.toString(),
       metadata: {
         // =================================================================

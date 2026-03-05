@@ -3,7 +3,6 @@ import { NextRequest, NextResponse } from 'next/server'
 // Define public routes that don't require authentication
 const PUBLIC_ROUTES = ['/', '/signin', '/privacy', '/terms', '/support']
 const PUBLIC_PATH_PATTERNS = ['/_next', '/favicon', '/images']
-const PUBLIC_API_ROUTES = ['/api/checkout/webhook', '/api/checkout/success', '/api/health', '/api/telemetry/event']
 const FILE_EXTENSIONS = ['.css', '.jpg', '.jpeg', '.png', '.svg', '.ico', '.js']
 const PRODUCTION_BLOCKED_ROUTES = ['/debug', '/cloudinary-test', '/firebase-auth']
 
@@ -29,8 +28,8 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next()
   }
 
-  const isPublicApiRoute = PUBLIC_API_ROUTES.includes(pathname)
-  if (isPublicApiRoute) {
+  // Let API routes handle their own auth and error contracts.
+  if (pathname.startsWith('/api/')) {
     return NextResponse.next()
   }
 

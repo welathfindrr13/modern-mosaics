@@ -8,6 +8,7 @@ import type { SizeKey } from '@/data/printLabCatalog'
 import {
   getRecommendedSizeKey,
 } from '@/utils/printQuality'
+import { trackClientEvent } from '@/lib/client-telemetry'
 
 // =============================================================================
 // RELIABILITY: Timeout constants for generation flow
@@ -15,6 +16,29 @@ import {
 const GENERATION_TIMEOUT_MS = 75_000  // 75s hard deadline
 const SLOW_THRESHOLD_MS = 30_000
 const VERY_SLOW_THRESHOLD_MS = 50_000
+const MAX_TRANSIENT_RETRIES = 2
+const TRANSIENT_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504])
+
+type ErrorStateDetails = {
+  statusCode?: number
+  step?: string
+  requestId?: string
+  retryable?: boolean
+}
+
+type RequestError = Error & ErrorStateDetails
+
+function isTransientFailure(statusCode: number | undefined, message: string): boolean {
+  if (statusCode && TRANSIENT_STATUS_CODES.has(statusCode)) return true
+  const normalized = message.toLowerCase()
+  return (
+    normalized.includes('timeout') ||
+    normalized.includes('timed out') ||
+    normalized.includes('network') ||
+    normalized.includes('fetch failed') ||
+    normalized.includes('rate limit')
+  )
+}
 
 // =============================================================================
 // CREATIVE ART MODE: Pre-filled prompt and suggestions
@@ -118,6 +142,7 @@ export default function CreatePage() {
   const [publicId, setPublicId] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [errorDetails, setErrorDetails] = useState<ErrorStateDetails | null>(null)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const abortControllerRef = useRef<AbortController | null>(null)
   const timerRef = useRef<NodeJS.Timeout | null>(null)
@@ -181,6 +206,7 @@ export default function CreatePage() {
     setImageUrl(null)
     setPublicId(null)
     setError(null)
+    setErrorDetails(null)
     setUploadedImage(null)
     setUploadedPreview(null)
     setUploadedDimensions(null)
@@ -208,6 +234,7 @@ export default function CreatePage() {
       ? 'Generation cancelled. You can try again.'
       : 'Upload cancelled. You can try again.'
     )
+    setErrorDetails(null)
   }
 
   // =========================================================================
@@ -222,6 +249,7 @@ export default function CreatePage() {
     }
     setLoading(true)
     setError(null)
+    setErrorDetails(null)
     setElapsedSeconds(0)
     
     const abortController = new AbortController()
@@ -236,9 +264,18 @@ export default function CreatePage() {
       abortController.abort()
     }, GENERATION_TIMEOUT_MS)
     
+    const eventBase = {
+      mode: createMode,
+      hasPrompt: Boolean(prompt.trim()),
+      hasUpload: Boolean(uploadedImage),
+    }
+    void trackClientEvent('create_preview_started', eventBase)
+
     try {
       let finalImageUrl: string
       let finalPublicId: string
+      let finalRequestId: string | undefined
+      let finalStep: string | undefined
       
       if (createMode === 'photo' && uploadedImage) {
         // =================================================================
@@ -256,25 +293,50 @@ export default function CreatePage() {
           reader.readAsDataURL(uploadedImage)
         })
         const base64Image = await base64Promise
-        
-        const uploadResponse = await fetch('/api/images/upload', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({
-            imageUrl: base64Image,
-            prompt: 'User uploaded photo',
-            save: true,
-          }),
-          signal: abortController.signal,
-        })
-        
-        const uploadData = await uploadResponse.json()
-        if (!uploadResponse.ok) {
-          throw new Error(uploadData.error || 'Failed to upload image')
+
+        let uploadData: any = null
+        let lastUploadError: RequestError | null = null
+
+        for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt += 1) {
+          const uploadResponse = await fetch('/api/images/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+              imageUrl: base64Image,
+              prompt: 'User uploaded photo',
+              save: true,
+            }),
+            signal: abortController.signal,
+          })
+
+          const payload = await uploadResponse.json().catch(() => ({}))
+          if (uploadResponse.ok) {
+            uploadData = payload
+            break
+          }
+
+          const requestError = new Error(payload.error || 'Failed to upload image') as RequestError
+          requestError.statusCode = uploadResponse.status
+          requestError.step = payload.step || 'upload'
+          requestError.requestId = payload.requestId
+          requestError.retryable = isTransientFailure(uploadResponse.status, requestError.message)
+          lastUploadError = requestError
+
+          if (!requestError.retryable || attempt >= MAX_TRANSIENT_RETRIES) {
+            throw requestError
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)))
+        }
+
+        if (!uploadData && lastUploadError) {
+          throw lastUploadError
         }
         
         finalPublicId = uploadData.publicId
+        finalRequestId = uploadData.requestId
+        finalStep = uploadData.step
         
         const transformString = selectedEnhancements
           .map(key => PHOTO_ENHANCEMENTS[key]?.transform)
@@ -290,21 +352,46 @@ export default function CreatePage() {
         // =================================================================
         // CREATIVE ART PATH: AI generation via OpenAI
         // =================================================================
-        const response = await fetch('/api/images/generate-and-upload', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ prompt, provider: 'openai', saveToGallery: false }),
-          signal: abortController.signal,
-        })
-        
-        const data = await response.json()
-        if (!response.ok) {
-          throw new Error(data.error || 'Failed to generate image')
+        let data: any = null
+        let lastGenerationError: RequestError | null = null
+
+        for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt += 1) {
+          const response = await fetch('/api/images/generate-and-upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ prompt, provider: 'openai', saveToGallery: false }),
+            signal: abortController.signal,
+          })
+
+          const payload = await response.json().catch(() => ({}))
+          if (response.ok) {
+            data = payload
+            break
+          }
+
+          const requestError = new Error(payload.error || 'Failed to generate image') as RequestError
+          requestError.statusCode = response.status
+          requestError.step = payload.step || 'openai'
+          requestError.requestId = payload.requestId
+          requestError.retryable = isTransientFailure(response.status, requestError.message)
+          lastGenerationError = requestError
+
+          if (!requestError.retryable || attempt >= MAX_TRANSIENT_RETRIES) {
+            throw requestError
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, 1200 * (attempt + 1)))
+        }
+
+        if (!data && lastGenerationError) {
+          throw lastGenerationError
         }
         
         finalImageUrl = data.imageUrl
         finalPublicId = data.publicId
+        finalRequestId = data.requestId
+        finalStep = data.step
       } else {
         throw new Error('Invalid state: no image to process')
       }
@@ -314,6 +401,13 @@ export default function CreatePage() {
       if (createMode === 'creative') {
         setGeneratedPrompt(prompt)
       }
+
+      void trackClientEvent('create_preview_succeeded', {
+        ...eventBase,
+        durationMs: Date.now() - startTime,
+        requestId: finalRequestId || null,
+        step: finalStep || 'complete',
+      })
       
       setTimeout(() => {
         previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -327,8 +421,19 @@ export default function CreatePage() {
             ? 'This is taking longer than usual. Please try again.'
             : 'Upload is taking longer than usual. Please try again.'
           )
+          setErrorDetails({
+            statusCode: 408,
+            step: createMode === 'creative' ? 'openai' : 'upload',
+            retryable: true,
+          })
         }
       } else {
+        const statusCode = Number.isFinite(err.statusCode) ? Number(err.statusCode) : undefined
+        const step = typeof err.step === 'string' ? err.step : undefined
+        const requestId = typeof err.requestId === 'string' ? err.requestId : undefined
+        const retryable = typeof err.retryable === 'boolean' ? err.retryable : isTransientFailure(statusCode, err.message || '')
+        setErrorDetails({ statusCode, step, requestId, retryable })
+
         const msg = err.message?.toLowerCase() || ''
         if (createMode === 'creative') {
           if (msg.includes('rate limit') || msg.includes('429')) {
@@ -350,6 +455,15 @@ export default function CreatePage() {
           }
         }
       }
+
+      void trackClientEvent('create_preview_failed', {
+        ...eventBase,
+        durationMs: Date.now() - startTime,
+        statusCode: Number.isFinite(err.statusCode) ? Number(err.statusCode) : null,
+        step: typeof err.step === 'string' ? err.step : 'unknown',
+        requestId: typeof err.requestId === 'string' ? err.requestId : null,
+        retryable: typeof err.retryable === 'boolean' ? err.retryable : null,
+      })
     } finally {
       clearTimeout(timeoutId)
       if (timerRef.current) {
@@ -388,6 +502,7 @@ export default function CreatePage() {
     setGeneratedPrompt(null)
     setPrompt(DEFAULT_PROMPT)
     setError(null)
+    setErrorDetails(null)
     setUploadedImage(null)
     setUploadedPreview(null)
     setUploadedDimensions(null)
@@ -767,18 +882,58 @@ export default function CreatePage() {
                 <div>
                   <p className="text-red-300 font-medium">Something went wrong</p>
                   <p className="text-red-400/80 text-sm mt-1">{error}</p>
+                  {(errorDetails?.step || errorDetails?.requestId) && (
+                    <p className="text-red-300/70 text-xs mt-2">
+                      {errorDetails.step ? `Step: ${errorDetails.step}` : 'Step: unknown'}
+                      {errorDetails.requestId ? ` · Request ID: ${errorDetails.requestId}` : ''}
+                    </p>
+                  )}
                 </div>
               </div>
-              <button
-                onClick={() => {
-                  setError(null)
-                  handleSubmit({ preventDefault: () => {} } as React.FormEvent)
-                }}
-                className="mt-4 btn-secondary text-sm"
-                disabled={loading}
-              >
-                Try Again
-              </button>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  onClick={() => {
+                    setError(null)
+                    handleSubmit({ preventDefault: () => {} } as React.FormEvent)
+                  }}
+                  className="btn-secondary text-sm"
+                  disabled={loading}
+                >
+                  Try Again
+                </button>
+                {createMode === 'creative' && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setError(null)
+                        setErrorDetails(null)
+                        setPrompt(DEFAULT_PROMPT)
+                      }}
+                      className="px-3 py-2 rounded-lg border border-white/20 text-dark-200 text-sm hover:text-white hover:border-white/30 transition-colors"
+                    >
+                      Try different prompt
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setError(null)
+                        setErrorDetails(null)
+                        handleModeSwitch('photo')
+                      }}
+                      className="px-3 py-2 rounded-lg border border-white/20 text-dark-200 text-sm hover:text-white hover:border-white/30 transition-colors"
+                    >
+                      Switch to Photo Prints
+                    </button>
+                    <Link
+                      href={errorDetails?.requestId ? `/support?requestId=${encodeURIComponent(errorDetails.requestId)}` : '/support'}
+                      className="px-3 py-2 rounded-lg border border-brand-400/30 text-brand-300 text-sm hover:text-brand-200 hover:border-brand-300 transition-colors"
+                    >
+                      Report issue
+                    </Link>
+                  </>
+                )}
+              </div>
             </div>
           )}
 

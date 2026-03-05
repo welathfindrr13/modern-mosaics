@@ -52,6 +52,8 @@ export default function OrderConfirmationPage() {
   const [loading, setLoading] = useState(true);
   const [orderDetails, setOrderDetails] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [cancelMessage, setCancelMessage] = useState<string | null>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(null);
   const [isFulfillmentPending, setIsFulfillmentPending] = useState(false);
@@ -181,6 +183,42 @@ export default function OrderConfirmationPage() {
     }
   }, [orderId]);
 
+  const handleCancelQueuedOrder = useCallback(async () => {
+    if (!orderDetails?.id || orderDetails?.status !== OrderStatus.QUEUED) return;
+
+    setIsCancelling(true);
+    setCancelMessage(null);
+    setError(null);
+
+    try {
+      const response = await fetch('/api/orders/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ orderId: orderDetails.id }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.message || payload?.error || 'Unable to cancel this order.');
+      }
+
+      const updatedOrder = {
+        ...orderDetails,
+        status: OrderStatus.CANCELED,
+        updatedAt: new Date().toISOString(),
+      };
+
+      setOrderDetails(updatedOrder);
+      saveOrderToLocalStorage(updatedOrder);
+      setCancelMessage('Order cancelled successfully while still in queued state.');
+    } catch (cancelError: any) {
+      setError(cancelError.message || 'Unable to cancel this order.');
+    } finally {
+      setIsCancelling(false);
+    }
+  }, [orderDetails]);
+
   useEffect(() => {
     const sessionId = searchParams?.get('session_id');
     const confirmationNonce =
@@ -299,6 +337,15 @@ export default function OrderConfirmationPage() {
               >
                 {refreshing ? 'Refreshing...' : 'Refresh Status'}
               </button>
+              {orderDetails.status === OrderStatus.QUEUED && (
+                <button
+                  onClick={handleCancelQueuedOrder}
+                  disabled={isCancelling}
+                  className="px-3 py-2 rounded-lg text-xs border border-red-400/30 text-red-300 hover:text-red-200 hover:border-red-300 transition-colors disabled:opacity-60"
+                >
+                  {isCancelling ? 'Cancelling...' : 'Cancel queued order'}
+                </button>
+              )}
             </div>
           </div>
 
@@ -368,6 +415,12 @@ export default function OrderConfirmationPage() {
                 recommendedSizeKey={recommendedSizeKey}
                 compact
               />
+
+              {cancelMessage && (
+                <div className="rounded-lg border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-300">
+                  {cancelMessage}
+                </div>
+              )}
 
               {orderDetails.status === 'SHIPPED' && orderDetails.trackingUrl && (
                 <div className="rounded-lg border border-white/10 bg-dark-800/50 p-4">

@@ -1,13 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 // Define public routes that don't require authentication
-const PUBLIC_ROUTES = ['/', '/signin']
+const PUBLIC_ROUTES = ['/', '/signin', '/privacy', '/terms', '/support']
 const PUBLIC_PATH_PATTERNS = ['/_next', '/favicon', '/images']
-const PUBLIC_API_ROUTES = ['/api/checkout/webhook', '/api/checkout/success', '/api/health']
+const PUBLIC_API_ROUTES = ['/api/checkout/webhook', '/api/checkout/success', '/api/health', '/api/telemetry/event']
 const FILE_EXTENSIONS = ['.css', '.jpg', '.jpeg', '.png', '.svg', '.ico', '.js']
+const PRODUCTION_BLOCKED_ROUTES = ['/debug', '/cloudinary-test', '/firebase-auth']
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
+  const isProduction = process.env.NODE_ENV === 'production'
+
+  if (isProduction && PRODUCTION_BLOCKED_ROUTES.some((route) => pathname === route || pathname.startsWith(`${route}/`))) {
+    return new NextResponse('Not found', { status: 404 })
+  }
 
   // First, check if this is a public asset or route
   const isPublicAsset = PUBLIC_PATH_PATTERNS.some(pattern => pathname.startsWith(pattern)) ||
@@ -43,7 +49,11 @@ export async function middleware(request: NextRequest) {
   }
 
   // If not authenticated, redirect to signin
-  return NextResponse.redirect(new URL('/signin', request.url))
+  const signinUrl = new URL('/signin', request.url)
+  if (pathname.startsWith('/dashboard')) {
+    signinUrl.searchParams.set('reason', 'orders')
+  }
+  return NextResponse.redirect(signinUrl)
 }
 
 export const config = {

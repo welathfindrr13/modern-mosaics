@@ -1,7 +1,7 @@
 'use client'
 
-import React, { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import React, { useRef, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Image from 'next/image'
 import Link from 'next/link'
 import type { User } from 'firebase/auth'
@@ -10,16 +10,44 @@ import {
   signInWithEmailPassword, 
   createUserWithEmailPassword,
   signInAnonymously,
+  sendPasswordResetEmailLink,
 } from '@/lib/firebase'
 import { clientCookieUtils } from '@/lib/auth-cookies'
+import { getSigninReasonMessage, isMethodDisabled, type AuthMethod } from '@/lib/auth-flow'
+import { trackClientEvent } from '@/lib/client-telemetry'
 
 export default function AuthPage() {
   const router = useRouter()
-  const [isLoading, setIsLoading] = useState(false)
+  const searchParams = useSearchParams()
+  const [activeAuthMethod, setActiveAuthMethod] = useState<AuthMethod>(null)
   const [error, setError] = useState<string | null>(null)
+  const [info, setInfo] = useState<string | null>(null)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [mode, setMode] = useState<'signin' | 'signup'>('signin')
+  const authAttemptRef = useRef(0)
+
+  const signInReason = getSigninReasonMessage(searchParams?.get('reason'))
+  const isGoogleLoading = activeAuthMethod === 'google'
+  const isGuestLoading = activeAuthMethod === 'guest'
+  const isEmailLoading = activeAuthMethod === 'email'
+
+  const beginAuthAttempt = (method: Exclude<AuthMethod, null>): number => {
+    authAttemptRef.current += 1
+    const attemptId = authAttemptRef.current
+    setActiveAuthMethod(method)
+    setError(null)
+    setInfo(null)
+    return attemptId
+  }
+
+  const isStaleAttempt = (attemptId: number) => authAttemptRef.current !== attemptId
+
+  const finishAuthAttempt = (attemptId: number) => {
+    if (!isStaleAttempt(attemptId)) {
+      setActiveAuthMethod(null)
+    }
+  }
 
   const completeAuthNavigation = async (user: User, destination: '/dashboard' | '/create') => {
     // Ensure auth cookies exist before navigating to server-guarded routes.
@@ -29,46 +57,66 @@ export default function AuthPage() {
   }
   
   const handleGoogleSignIn = async () => {
-    setIsLoading(true)
-    setError(null)
+    const attemptId = beginAuthAttempt('google')
     try {
       const result = await signInWithGoogle()
+      if (isStaleAttempt(attemptId)) return
+
       if (result.error) {
-        switch (result.error.code) {
-          case 'auth/popup-blocked':
+        void trackClientEvent('sign_in_google_failed', {
+          reason: result.code || 'unknown',
+          timedOut: result.timedOut === true,
+        })
+
+        switch (result.code) {
+          case 'popup_blocked':
             setError('Please allow popups for this site and try again.')
             break
-          case 'auth/popup-closed-by-user':
+          case 'popup_closed':
             setError('Sign-in was cancelled. Please try again.')
+            break
+          case 'popup_timeout':
+            setError('Google sign-in timed out. Please close any popup windows and retry.')
+            break
+          case 'popup_cancelled':
+            setError('A previous Google sign-in request was cancelled. Please try again.')
             break
           default:
             setError('Failed to sign in with Google. Please try again.')
         }
       } else if (result.user) {
+        void trackClientEvent('sign_in_google_succeeded')
         await completeAuthNavigation(result.user, '/dashboard')
       }
-    } catch (err) {
+    } catch {
+      if (isStaleAttempt(attemptId)) return
+      void trackClientEvent('sign_in_google_failed', {
+        reason: 'unexpected_error',
+        timedOut: false,
+      })
       setError('An unexpected error occurred. Please try again.')
     } finally {
-      setIsLoading(false)
+      finishAuthAttempt(attemptId)
     }
   }
 
   const handleGuestCheckout = async () => {
-    setIsLoading(true)
-    setError(null)
+    const attemptId = beginAuthAttempt('guest')
 
     try {
       const result = await signInAnonymously()
+      if (isStaleAttempt(attemptId)) return
+
       if (result.error) {
         setError('Guest checkout is currently unavailable. Please try again.')
       } else if (result.user) {
         await completeAuthNavigation(result.user, '/create')
       }
     } catch {
+      if (isStaleAttempt(attemptId)) return
       setError('Guest checkout is currently unavailable. Please try again.')
     } finally {
-      setIsLoading(false)
+      finishAuthAttempt(attemptId)
     }
   }
   
@@ -79,12 +127,13 @@ export default function AuthPage() {
       return
     }
     
-    setIsLoading(true)
-    setError(null)
+    const attemptId = beginAuthAttempt('email')
     
     try {
       if (mode === 'signin') {
         const result = await signInWithEmailPassword(email, password)
+        if (isStaleAttempt(attemptId)) return
+
         if (result.error) {
           setError('Invalid email or password. Please try again.')
         } else if (result.user) {
@@ -92,10 +141,12 @@ export default function AuthPage() {
         }
       } else {
         const result = await createUserWithEmailPassword(email, password)
+        if (isStaleAttempt(attemptId)) return
+
         if (result.error) {
-          if (result.error.code === 'auth/email-already-in-use') {
+          if (result.code === 'email_already_in_use') {
             setError('This email is already registered. Please try signing in.')
-          } else if (result.error.code === 'auth/weak-password') {
+          } else if (result.code === 'weak_password') {
             setError('Password is too weak. Please use a stronger password.')
           } else {
             setError('Failed to create account. Please try again.')
@@ -104,11 +155,34 @@ export default function AuthPage() {
           await completeAuthNavigation(result.user, '/dashboard')
         }
       }
-    } catch (err) {
+    } catch {
+      if (isStaleAttempt(attemptId)) return
       setError('An unexpected error occurred')
     } finally {
-      setIsLoading(false)
+      finishAuthAttempt(attemptId)
     }
+  }
+
+  const handleForgotPassword = async () => {
+    if (!email.trim()) {
+      setError('Enter your email first, then click "Forgot password?".')
+      return
+    }
+
+    const result = await sendPasswordResetEmailLink(email)
+    if (result.success) {
+      setError(null)
+      setInfo('Password reset email sent. Please check your inbox.')
+      return
+    }
+
+    if (result.code === 'invalid_credentials') {
+      setInfo('If an account exists for that email, a reset link has been sent.')
+      setError(null)
+      return
+    }
+
+    setError('Unable to send reset email right now. Please try again.')
   }
   
   return (
@@ -145,33 +219,45 @@ export default function AuthPage() {
               ? 'Sign in to continue creating' 
               : 'Start your creative journey'}
           </p>
+
+          {signInReason && (
+            <div className="mb-6 p-4 rounded-xl bg-brand-500/10 border border-brand-500/30">
+              <p className="text-brand-200 text-sm">{signInReason}</p>
+            </div>
+          )}
           
           {error && (
             <div className="mb-6 p-4 rounded-xl bg-red-500/10 border border-red-500/20">
               <p className="text-red-400 text-sm">{error}</p>
             </div>
           )}
+
+          {info && (
+            <div className="mb-6 p-4 rounded-xl bg-green-500/10 border border-green-500/20">
+              <p className="text-green-300 text-sm">{info}</p>
+            </div>
+          )}
           
           {/* Google Sign In */}
           <button
             onClick={handleGoogleSignIn}
-            disabled={isLoading}
+            disabled={isMethodDisabled(activeAuthMethod, 'google')}
             className="w-full flex items-center justify-center gap-3 px-6 py-3 rounded-xl bg-white text-dark-800 font-medium hover:bg-dark-50 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed mb-6"
           >
-            {isLoading ? (
+            {isGoogleLoading ? (
               <div className="w-5 h-5 border-2 border-dark-400 border-t-dark-800 rounded-full animate-spin" />
             ) : (
               <Image src="/google-icon.svg" alt="Google" width={20} height={20} />
             )}
-            {isLoading ? 'Signing in...' : 'Continue with Google'}
+            {isGoogleLoading ? 'Signing in...' : 'Continue with Google'}
           </button>
 
           <button
             onClick={handleGuestCheckout}
-            disabled={isLoading}
+            disabled={isMethodDisabled(activeAuthMethod, 'guest')}
             className="w-full px-6 py-3 rounded-xl border border-white/15 text-dark-200 hover:text-white hover:border-white/30 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed mb-6"
           >
-            Continue as Guest
+            {isGuestLoading ? 'Starting guest session...' : 'Continue as Guest'}
           </button>
           
           {/* Divider */}
@@ -195,6 +281,7 @@ export default function AuthPage() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                disabled={isEmailLoading}
                 className="input-premium"
                 placeholder="you@example.com"
                 required
@@ -210,18 +297,30 @@ export default function AuthPage() {
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                disabled={isEmailLoading}
                 className="input-premium"
                 placeholder="••••••••"
                 required
               />
+              {mode === 'signin' && (
+                <div className="mt-2 text-right">
+                  <button
+                    type="button"
+                    onClick={handleForgotPassword}
+                    className="text-xs text-brand-300 hover:text-brand-200 transition-colors"
+                  >
+                    Forgot password?
+                  </button>
+                </div>
+              )}
             </div>
             
             <button
               type="submit"
-              disabled={isLoading}
+              disabled={isMethodDisabled(activeAuthMethod, 'email')}
               className="btn-primary w-full py-3 disabled:opacity-50"
             >
-              {isLoading ? (
+              {isEmailLoading ? (
                 <span className="flex items-center justify-center gap-2">
                   <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                   {mode === 'signin' ? 'Signing in...' : 'Creating account...'}
@@ -236,6 +335,7 @@ export default function AuthPage() {
           <div className="mt-6 text-center">
             <button 
               onClick={() => setMode(mode === 'signin' ? 'signup' : 'signin')}
+              disabled={isEmailLoading}
               className="text-sm text-dark-400 hover:text-brand-400 transition-colors"
             >
               {mode === 'signin' 

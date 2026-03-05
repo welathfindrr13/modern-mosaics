@@ -39,11 +39,13 @@ export default function OrdersPage() {
   const { user, loading: authLoading } = useAuth();
   const [orders, setOrders] = useState<OrderData[]>([]);
   const [loading, setLoading] = useState(true);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [cancelingByOrderId, setCancelingByOrderId] = useState<Record<string, boolean>>({});
   const isAuthenticated = !!user && !user.isAnonymous;
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
-      router.replace('/signin');
+      router.replace('/signin?reason=orders');
     }
   }, [authLoading, isAuthenticated, router]);
 
@@ -68,6 +70,37 @@ export default function OrdersPage() {
       setLoading(false);
     }
   }, [isAuthenticated]);
+
+  const handleCancelQueuedOrder = async (orderId: string) => {
+    setActionError(null);
+    setCancelingByOrderId((prev) => ({ ...prev, [orderId]: true }));
+
+    try {
+      const response = await fetch('/api/orders/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ orderId }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.message || payload?.error || 'Failed to cancel order.');
+      }
+
+      setOrders((prev) =>
+        prev.map((order) =>
+          order.orderId === orderId
+            ? { ...order, status: OrderStatus.CANCELED }
+            : order
+        )
+      );
+    } catch (error: any) {
+      setActionError(error.message || 'Failed to cancel queued order.');
+    } finally {
+      setCancelingByOrderId((prev) => ({ ...prev, [orderId]: false }));
+    }
+  };
 
   return (
     <DashboardUI>
@@ -115,6 +148,11 @@ export default function OrdersPage() {
           </div>
         ) : (
           <div className="space-y-4">
+            {actionError && (
+              <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
+                {actionError}
+              </div>
+            )}
             <div className="flex items-center justify-between">
               <p className="text-dark-400 text-sm">
                 {orders.length} order{orders.length !== 1 ? 's' : ''} · Printed on archival paper with tracked delivery
@@ -128,6 +166,8 @@ export default function OrdersPage() {
                 status={order.status}
                 createdAt={order.createdAt}
                 productName={order.productName}
+                onCancel={handleCancelQueuedOrder}
+                canceling={cancelingByOrderId[order.orderId] === true}
               />
             ))}
           </div>

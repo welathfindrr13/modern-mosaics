@@ -5,6 +5,7 @@ import {
   signInWithPopup,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
   signInAnonymously as firebaseSignInAnonymously,
   signOut as firebaseSignOut,
   onAuthStateChanged,
@@ -16,6 +17,7 @@ import {
   getFirestore, 
   Firestore
 } from 'firebase/firestore';
+import { GOOGLE_POPUP_TIMEOUT_MS, withAuthTimeout } from '@/lib/auth-flow';
 
 // Firebase configuration from environment variables
 const firebaseConfig = {
@@ -71,30 +73,73 @@ googleProvider.setCustomParameters({
 });
 
 // Type for auth results
-type AuthResult = {
+export type AuthFailureCode =
+  | 'popup_blocked'
+  | 'popup_closed'
+  | 'popup_timeout'
+  | 'popup_cancelled'
+  | 'invalid_credentials'
+  | 'email_already_in_use'
+  | 'weak_password'
+  | 'too_many_requests'
+  | 'network_error'
+  | 'unknown';
+
+export type AuthResult = {
   user: User | null;
-  error: AuthError | null;
+  error: AuthError | Error | null;
+  code: AuthFailureCode | null;
+  timedOut?: boolean;
 };
+
+type PasswordResetResult = {
+  success: boolean;
+  error: AuthError | Error | null;
+  code: AuthFailureCode | null;
+};
+
+function mapAuthCode(code?: string): AuthFailureCode {
+  switch (code) {
+    case 'auth/popup-blocked':
+      return 'popup_blocked';
+    case 'auth/popup-closed-by-user':
+      return 'popup_closed';
+    case 'auth/popup-timeout':
+      return 'popup_timeout';
+    case 'auth/cancelled-popup-request':
+      return 'popup_cancelled';
+    case 'auth/invalid-credential':
+    case 'auth/invalid-email':
+    case 'auth/user-not-found':
+    case 'auth/wrong-password':
+      return 'invalid_credentials';
+    case 'auth/email-already-in-use':
+      return 'email_already_in_use';
+    case 'auth/weak-password':
+      return 'weak_password';
+    case 'auth/too-many-requests':
+      return 'too_many_requests';
+    case 'auth/network-request-failed':
+      return 'network_error';
+    default:
+      return 'unknown';
+  }
+}
 
 // Sign in with Google
 export const signInWithGoogle = async (): Promise<AuthResult> => {
   try {
-    const result = await signInWithPopup(auth, googleProvider);
-    return { user: result.user, error: null };
+    const result = await withAuthTimeout(
+      signInWithPopup(auth, googleProvider),
+      GOOGLE_POPUP_TIMEOUT_MS
+    );
+    return { user: result.user, error: null, code: null };
   } catch (error) {
-    const authError = error as AuthError;
-    console.error("Error signing in with Google", authError);
-    
-    // Handle specific Firebase Auth errors
-    if (authError.code === 'auth/popup-blocked') {
-      console.error('Popup was blocked by the browser');
-    } else if (authError.code === 'auth/popup-closed-by-user') {
-      console.error('Popup was closed by user');
-    } else if (authError.code === 'auth/cancelled-popup-request') {
-      console.error('Popup request was cancelled');
-    }
-    
-    return { user: null, error: authError };
+    const authError = error as AuthError | Error;
+    const code = mapAuthCode((authError as AuthError)?.code);
+    const timedOut = (authError as { timedOut?: boolean }).timedOut === true || code === 'popup_timeout';
+    console.error('Error signing in with Google', authError);
+    return { user: null, error: authError, code, timedOut };
   }
 };
 
@@ -102,10 +147,11 @@ export const signInWithGoogle = async (): Promise<AuthResult> => {
 export const signInWithEmailPassword = async (email: string, password: string): Promise<AuthResult> => {
   try {
     const result = await signInWithEmailAndPassword(auth, email, password);
-    return { user: result.user, error: null };
+    return { user: result.user, error: null, code: null };
   } catch (error) {
     console.error("Error signing in with email/password", error);
-    return { user: null, error: error as AuthError };
+    const authError = error as AuthError;
+    return { user: null, error: authError, code: mapAuthCode(authError.code) };
   }
 };
 
@@ -113,10 +159,11 @@ export const signInWithEmailPassword = async (email: string, password: string): 
 export const createUserWithEmailPassword = async (email: string, password: string): Promise<AuthResult> => {
   try {
     const result = await createUserWithEmailAndPassword(auth, email, password);
-    return { user: result.user, error: null };
+    return { user: result.user, error: null, code: null };
   } catch (error) {
     console.error("Error creating user with email/password", error);
-    return { user: null, error: error as AuthError };
+    const authError = error as AuthError;
+    return { user: null, error: authError, code: mapAuthCode(authError.code) };
   }
 };
 
@@ -124,10 +171,22 @@ export const createUserWithEmailPassword = async (email: string, password: strin
 export const signInAnonymously = async (): Promise<AuthResult> => {
   try {
     const result = await firebaseSignInAnonymously(auth);
-    return { user: result.user, error: null };
+    return { user: result.user, error: null, code: null };
   } catch (error) {
     console.error("Error signing in anonymously", error);
-    return { user: null, error: error as AuthError };
+    const authError = error as AuthError;
+    return { user: null, error: authError, code: mapAuthCode(authError.code) };
+  }
+};
+
+export const sendPasswordResetEmailLink = async (email: string): Promise<PasswordResetResult> => {
+  try {
+    await sendPasswordResetEmail(auth, email.trim());
+    return { success: true, error: null, code: null };
+  } catch (error) {
+    const authError = error as AuthError;
+    console.error('Error sending password reset email', authError);
+    return { success: false, error: authError, code: mapAuthCode(authError.code) };
   }
 };
 

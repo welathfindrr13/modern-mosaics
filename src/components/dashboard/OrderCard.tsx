@@ -9,9 +9,11 @@ export interface OrderCardProps {
   status: OrderStatus;
   createdAt: string;
   productName?: string;
+  onCancel?: (orderId: string) => Promise<void> | void;
+  canceling?: boolean;
 }
 
-export function OrderCard({ orderId, gelatoOrderId, status, createdAt, productName }: OrderCardProps) {
+export function OrderCard({ orderId, gelatoOrderId, status, createdAt, productName, onCancel, canceling = false }: OrderCardProps) {
   const shortOrderId = `${orderId.slice(0, 12)}...`;
 
   const handleCopyOrderId = async () => {
@@ -135,6 +137,19 @@ export function OrderCard({ orderId, gelatoOrderId, status, createdAt, productNa
           <span className="capitalize">{displayName}</span>
         </div>
       </div>
+
+      {status === OrderStatus.QUEUED && onCancel && (
+        <div className="mt-4 pt-3 border-t border-white/10 flex justify-end">
+          <button
+            type="button"
+            onClick={() => onCancel(orderId)}
+            disabled={canceling}
+            className="px-3 py-1.5 text-xs rounded-lg border border-red-400/30 text-red-300 hover:text-red-200 hover:border-red-300 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {canceling ? 'Cancelling...' : 'Cancel queued order'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

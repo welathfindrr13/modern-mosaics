@@ -1163,6 +1163,15 @@ export default function OrderClient({ imageIdentifier }: OrderClientProps) {
                     </div>
                   </div>
                 </div>
+
+                <div className="mt-3 p-3 rounded-lg bg-brand-500/5 border border-brand-500/20">
+                  <p className="text-xs uppercase tracking-wider text-brand-300">What happens after checkout</p>
+                  <ol className="mt-2 space-y-1 text-xs text-dark-300 list-decimal list-inside">
+                    <li>Stripe confirms payment.</li>
+                    <li>Your order is submitted to Gelato via webhook-first fulfillment.</li>
+                    <li>Status updates appear in your dashboard as production progresses.</li>
+                  </ol>
+                </div>
                 
                 <p className="text-center text-dark-500 text-xs mt-3">
                   🌍 Printed locally via Gelato's global network using archival-quality inks

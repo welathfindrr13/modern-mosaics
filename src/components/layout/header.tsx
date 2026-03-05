@@ -12,7 +12,8 @@ export function Header() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [mounted, setMounted] = useState(false)
   
-  const isAuthenticated = !!user && !user.isAnonymous
+  const hasUser = !!user
+  const isGuest = !!user?.isAnonymous
   const displayName = user?.displayName || user?.email?.split('@')[0] || 'Account'
 
   // Track when component has mounted to avoid hydration mismatch
@@ -33,6 +34,7 @@ export function Header() {
     { name: 'Create', href: '/create' },
     { name: 'Gallery', href: '/gallery' },
     { name: 'Dashboard', href: '/dashboard' },
+    { name: 'Support', href: '/support' },
   ]
 
   return (
@@ -87,7 +89,7 @@ export function Header() {
           {/* Auth Section + Mobile Menu */}
           <div className="flex items-center gap-3">
             {/* Only render auth-dependent content after mount to avoid hydration mismatch */}
-            {mounted && !loading && isAuthenticated ? (
+            {mounted && !loading && hasUser ? (
               <>
                 {/* User chip - desktop only */}
                 <div className="hidden md:flex items-center gap-3 mr-2">
@@ -97,9 +99,19 @@ export function Header() {
                     </svg>
                   </div>
                   <span className="text-sm text-dark-200 font-medium">
-                    {displayName}
+                    {isGuest ? 'Guest mode' : displayName}
                   </span>
                 </div>
+
+                {isGuest && (
+                  <Link
+                    href="/signin?reason=upgrade"
+                    className="hidden md:inline-flex px-4 py-2 text-sm font-medium text-brand-300 border border-brand-400/30 rounded-xl transition-all duration-200 hover:text-brand-200 hover:border-brand-300"
+                  >
+                    Upgrade account
+                  </Link>
+                )}
+
                 <button
                   onClick={() => logOut()}
                   className="hidden md:block px-4 py-2 text-sm font-medium text-dark-300 hover:text-white border border-white/10 hover:border-white/20 rounded-xl transition-all duration-200 hover:bg-white/5"
@@ -160,7 +172,7 @@ export function Header() {
               
               {/* Mobile auth section */}
               <div className="mt-4 pt-4 border-t border-white/5">
-                {mounted && !loading && isAuthenticated ? (
+                {mounted && !loading && hasUser ? (
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 flex items-center justify-center text-white">
@@ -168,17 +180,28 @@ export function Header() {
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                         </svg>
                       </div>
-                      <span className="text-sm text-dark-200">{displayName}</span>
+                      <span className="text-sm text-dark-200">{isGuest ? 'Guest mode' : displayName}</span>
                     </div>
-                    <button
-                      onClick={() => {
-                        logOut()
-                        setMobileMenuOpen(false)
-                      }}
-                      className="px-4 py-2 text-sm text-dark-400 hover:text-white"
-                    >
-                      Sign out
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {isGuest && (
+                        <Link
+                          href="/signin?reason=upgrade"
+                          onClick={() => setMobileMenuOpen(false)}
+                          className="px-3 py-1.5 text-xs border border-brand-400/30 rounded-lg text-brand-300"
+                        >
+                          Upgrade
+                        </Link>
+                      )}
+                      <button
+                        onClick={() => {
+                          logOut()
+                          setMobileMenuOpen(false)
+                        }}
+                        className="px-4 py-2 text-sm text-dark-400 hover:text-white"
+                      >
+                        Sign out
+                      </button>
+                    </div>
                   </div>
                 ) : mounted && !loading ? (
                   <Link

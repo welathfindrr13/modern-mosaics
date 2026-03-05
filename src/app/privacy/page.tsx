@@ -85,7 +85,10 @@ export default function PrivacyPage() {
           <section>
             <h2 className="text-xl font-semibold text-white mb-3">7. Contact</h2>
             <p className="text-dark-300">
-              For privacy-related questions, email <span className="text-brand-400">privacy@modernmosaics.co</span>.
+              For privacy-related questions, email{' '}
+              <a className="text-brand-400 hover:text-brand-300 underline" href="mailto:privacy@modernmosaics.co">
+                privacy@modernmosaics.co
+              </a>.
             </p>
           </section>
         </div>

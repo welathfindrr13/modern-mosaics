@@ -37,11 +37,24 @@ export async function GET(request: NextRequest) {
   if (process.env.NODE_ENV !== 'development') {
     const authResponse = await requireAuth(request);
     if (authResponse) {
+      console.warn('[DEBUG_ACCESS_DENIED]', JSON.stringify({
+        path: '/api/debug/fx-verify',
+        reason: 'unauthenticated',
+        env: process.env.NODE_ENV,
+        timestamp: new Date().toISOString(),
+      }));
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
 
     const email = await getUserEmail(request);
     if (!isDebugAdmin(email)) {
+      console.warn('[DEBUG_ACCESS_DENIED]', JSON.stringify({
+        path: '/api/debug/fx-verify',
+        reason: 'not_allowlisted',
+        hasEmail: Boolean(email),
+        env: process.env.NODE_ENV,
+        timestamp: new Date().toISOString(),
+      }));
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
   }

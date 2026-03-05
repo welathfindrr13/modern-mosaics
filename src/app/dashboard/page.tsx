@@ -69,7 +69,7 @@ function DashboardContent() {
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
-      router.replace('/signin')
+      router.replace('/signin?reason=orders')
     }
   }, [authLoading, isAuthenticated, router])
 

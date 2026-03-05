@@ -9,7 +9,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "verify:headers": "bash scripts/verify-security-headers.sh",
+    "smoke:mobile": "node scripts/mobile-smoke.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.32.0",

@@ -101,7 +101,10 @@ export default function TermsPage() {
           <section>
             <h2 className="text-xl font-semibold text-white mb-3">10. Contact</h2>
             <p className="text-dark-300">
-              Questions? Email <span className="text-brand-400">support@modernmosaics.co</span>.
+              Questions? Email{' '}
+              <a className="text-brand-400 hover:text-brand-300 underline" href="mailto:support@modernmosaics.co">
+                support@modernmosaics.co
+              </a>.
             </p>
           </section>
         </div>

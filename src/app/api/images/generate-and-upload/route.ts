@@ -99,6 +99,10 @@ export interface GenerateAndUploadResponse {
   provider: ImageProviderName;
   /** Firestore image ID (if saved to gallery) */
   imageId?: string;
+  /** Request ID for support diagnostics */
+  requestId?: string;
+  /** Final step marker */
+  step?: 'complete';
 }
 
 export async function POST(req: NextRequest) {
@@ -268,6 +272,8 @@ export async function POST(req: NextRequest) {
       width: uploadResult.width,
       height: uploadResult.height,
       provider,
+      requestId,
+      step: 'complete',
       ...(imageId && { imageId }),
     };
 

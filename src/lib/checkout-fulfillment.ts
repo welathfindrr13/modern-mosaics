@@ -79,6 +79,12 @@ export type FulfillmentErrorInfo = {
   retryable: boolean;
 };
 
+export type LegacyOrderLookupResult = {
+  order: LocalOrder | null;
+  failedPrecondition: boolean;
+  lookupErrorCode?: string;
+};
+
 export function classifyFulfillmentError(error: unknown): FulfillmentErrorInfo {
   if (error instanceof FulfillmentError) {
     return {
@@ -248,10 +254,20 @@ export function toLocalOrderFromStoredOrder(storedOrder: any): LocalOrder {
   };
 }
 
-export async function getOrderByStripeSessionId(stripeSessionId: string): Promise<LocalOrder | null> {
+export function isFirestoreFailedPrecondition(error: unknown): boolean {
+  const err = error as { code?: string | number; message?: string };
+  const code = String(err?.code ?? '');
+  const message = String(err?.message ?? '').toLowerCase();
+  return code === '9' || code.toUpperCase().includes('FAILED_PRECONDITION') || message.includes('failed_precondition');
+}
+
+export async function getOrderByStripeSessionIdDetailed(stripeSessionId: string): Promise<LegacyOrderLookupResult> {
   try {
     const existing = await adminOrderOperations.getByStripeSessionId(stripeSessionId);
-    return existing?.order ? toLocalOrderFromStoredOrder(existing.order) : null;
+    return {
+      order: existing?.order ? toLocalOrderFromStoredOrder(existing.order) : null,
+      failedPrecondition: false,
+    };
   } catch (error) {
     const err = error as { code?: string | number; message?: string };
     console.warn(
@@ -259,8 +275,17 @@ export async function getOrderByStripeSessionId(stripeSessionId: string): Promis
       err?.code ?? 'unknown',
       err?.message ?? 'unknown'
     );
-    return null;
+    return {
+      order: null,
+      failedPrecondition: isFirestoreFailedPrecondition(error),
+      lookupErrorCode: err?.code ? String(err.code) : undefined,
+    };
   }
+}
+
+export async function getOrderByStripeSessionId(stripeSessionId: string): Promise<LocalOrder | null> {
+  const result = await getOrderByStripeSessionIdDetailed(stripeSessionId);
+  return result.order;
 }
 
 export async function getSessionFulfillmentState(rawSessionId: string): Promise<SessionFulfillmentRecord | null> {

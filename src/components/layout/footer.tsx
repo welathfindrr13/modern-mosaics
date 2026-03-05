@@ -12,6 +12,7 @@ export function Footer() {
     { name: 'Home', href: '/' },
     { name: 'Create', href: '/create' },
     { name: 'Gallery', href: '/gallery' },
+    { name: 'Support', href: '/support' },
     { name: 'Privacy', href: '/privacy' },
     { name: 'Terms', href: '/terms' },
   ]

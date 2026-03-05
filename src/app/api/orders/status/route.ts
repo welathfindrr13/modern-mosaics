@@ -100,8 +100,21 @@ export async function POST(request: NextRequest) {
     const { orderId } = await request.json();
     
     if (!orderId) {
+      console.info('[ORDER_CANCEL_AUDIT]', JSON.stringify({
+        uid: user.uid,
+        orderId: null,
+        outcome: 'rejected_missing_order_id',
+        timestamp: new Date().toISOString(),
+      }));
       return NextResponse.json({ error: 'Missing order ID' }, { status: 400 });
     }
+
+    console.info('[ORDER_CANCEL_AUDIT]', JSON.stringify({
+      uid: user.uid,
+      orderId,
+      outcome: 'attempt',
+      timestamp: new Date().toISOString(),
+    }));
     
     const orderByGelatoId = await adminOrderOperations.getByUserAndGelatoOrderId(user.uid, orderId);
     const orderByReference = orderByGelatoId
@@ -110,6 +123,12 @@ export async function POST(request: NextRequest) {
     const orderRecord = orderByGelatoId || orderByReference;
 
     if (!orderRecord) {
+      console.info('[ORDER_CANCEL_AUDIT]', JSON.stringify({
+        uid: user.uid,
+        orderId,
+        outcome: 'rejected_order_not_found',
+        timestamp: new Date().toISOString(),
+      }));
       return NextResponse.json({ error: 'Order not found' }, { status: 404 });
     }
     const gelatoOrderId = orderRecord.gelatoOrderId || orderId;
@@ -122,6 +141,14 @@ export async function POST(request: NextRequest) {
     
     // Can only cancel orders in QUEUED status
     if (orderDetails.status !== 'QUEUED') {
+      console.info('[ORDER_CANCEL_AUDIT]', JSON.stringify({
+        uid: user.uid,
+        orderId,
+        gelatoOrderId,
+        outcome: 'rejected_non_queued',
+        orderStatus: orderDetails.status,
+        timestamp: new Date().toISOString(),
+      }));
       return NextResponse.json(
         { 
           error: 'Order cannot be canceled', 
@@ -134,6 +161,14 @@ export async function POST(request: NextRequest) {
     
     // Attempt to cancel the order
     await gelatoClient.cancelOrder(gelatoOrderId);
+
+    console.info('[ORDER_CANCEL_AUDIT]', JSON.stringify({
+      uid: user.uid,
+      orderId,
+      gelatoOrderId,
+      outcome: 'cancelled',
+      timestamp: new Date().toISOString(),
+    }));
     
     return NextResponse.json({
       success: true,
@@ -146,6 +181,12 @@ export async function POST(request: NextRequest) {
     
   } catch (error: any) {
     console.error('[ORDER_STATUS] Cancellation failed:', error?.message || error);
+    console.info('[ORDER_CANCEL_AUDIT]', JSON.stringify({
+      uid: user.uid,
+      outcome: 'error',
+      message: error?.message || 'unknown_error',
+      timestamp: new Date().toISOString(),
+    }));
     return NextResponse.json(
       { error: `Failed to cancel order: ${error.message}` },
       { status: 500 }

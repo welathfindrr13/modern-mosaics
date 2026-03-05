@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerStripe } from '@/lib/stripe';
 import {
-  getOrderByStripeSessionId,
+  getOrderByStripeSessionIdDetailed,
   getOrderFromFulfillmentState,
   getSessionFulfillmentState,
 } from '@/lib/checkout-fulfillment';
@@ -51,20 +51,29 @@ export async function GET(request: NextRequest) {
 
     const fulfillmentState = await getSessionFulfillmentState(cleanSessionId);
     if (fulfillmentState?.status === 'fulfilled') {
-      const localOrder = await getOrderFromFulfillmentState(cleanSessionId);
-      if (localOrder) {
-        return NextResponse.json({
-          success: true,
-          fulfilled: true,
-          idempotent: true,
-          order: {
-            id: localOrder.id,
-            referenceId: localOrder.referenceId,
-            status: localOrder.status,
-            created: localOrder.createdAt,
-          },
-          localOrder,
-        });
+      console.info('[CHECKOUT_SUCCESS_METRIC]', JSON.stringify({
+        metric: 'fulfillment_state_hit',
+        stripeSessionId: cleanSessionId,
+        state: fulfillmentState.status,
+      }));
+      try {
+        const localOrder = await getOrderFromFulfillmentState(cleanSessionId);
+        if (localOrder) {
+          return NextResponse.json({
+            success: true,
+            fulfilled: true,
+            idempotent: true,
+            order: {
+              id: localOrder.id,
+              referenceId: localOrder.referenceId,
+              status: localOrder.status,
+              created: localOrder.createdAt,
+            },
+            localOrder,
+          });
+        }
+      } catch (lookupError: any) {
+        console.warn('[CHECKOUT_SUCCESS] fulfillment-state lookup failed, continuing as pending:', lookupError?.message || lookupError);
       }
     }
 
@@ -99,19 +108,31 @@ export async function GET(request: NextRequest) {
     }
 
     // Legacy fallback for historical orders created before fulfillment-state tracking.
-    const existingOrder = await getOrderByStripeSessionId(cleanSessionId);
-    if (existingOrder) {
+    const legacyLookup = await getOrderByStripeSessionIdDetailed(cleanSessionId);
+    if (legacyLookup.failedPrecondition) {
+      console.warn('[CHECKOUT_SUCCESS_METRIC]', JSON.stringify({
+        metric: 'legacy_fallback_failed_precondition',
+        stripeSessionId: cleanSessionId,
+        lookupErrorCode: legacyLookup.lookupErrorCode || 'unknown',
+      }));
+    }
+
+    if (legacyLookup.order) {
+      console.info('[CHECKOUT_SUCCESS_METRIC]', JSON.stringify({
+        metric: 'legacy_fallback_hit',
+        stripeSessionId: cleanSessionId,
+      }));
       return NextResponse.json({
         success: true,
         fulfilled: true,
         idempotent: true,
         order: {
-          id: existingOrder.id,
-          referenceId: existingOrder.referenceId,
-          status: existingOrder.status,
-          created: existingOrder.createdAt,
+          id: legacyLookup.order.id,
+          referenceId: legacyLookup.order.referenceId,
+          status: legacyLookup.order.status,
+          created: legacyLookup.order.createdAt,
         },
-        localOrder: existingOrder,
+        localOrder: legacyLookup.order,
       });
     }
 

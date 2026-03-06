@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 
 // Define public routes that don't require authentication
 const PUBLIC_ROUTES = ['/', '/signin', '/privacy', '/terms', '/support']
-const PUBLIC_PATH_PATTERNS = ['/_next', '/favicon', '/images']
+const PUBLIC_PATH_PATTERNS = ['/_next', '/favicon', '/images', '/__/auth', '/__/firebase']
 const FILE_EXTENSIONS = ['.css', '.jpg', '.jpeg', '.png', '.svg', '.ico', '.js']
 const PRODUCTION_BLOCKED_ROUTES = ['/debug', '/cloudinary-test', '/firebase-auth']
 

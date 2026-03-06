@@ -57,6 +57,26 @@ const nextConfig = {
       },
     ];
   },
+  async rewrites() {
+    const firebaseHelperHost = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID
+      ? `https://${process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID}.firebaseapp.com`
+      : null;
+
+    if (!firebaseHelperHost) {
+      return [];
+    }
+
+    return [
+      {
+        source: '/__/auth/:path*',
+        destination: `${firebaseHelperHost}/__/auth/:path*`,
+      },
+      {
+        source: '/__/firebase/:path*',
+        destination: `${firebaseHelperHost}/__/firebase/:path*`,
+      },
+    ];
+  },
   images: {
     remotePatterns: [
       {

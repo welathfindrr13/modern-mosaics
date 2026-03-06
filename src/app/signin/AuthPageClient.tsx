@@ -1,16 +1,18 @@
 'use client'
 
-import React, { useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Image from 'next/image'
 import Link from 'next/link'
 import type { User } from 'firebase/auth'
+import { useAuth } from '@/components/providers/firebase-auth-provider'
 import { 
   signInWithGoogle, 
   signInWithEmailPassword, 
   createUserWithEmailPassword,
   signInAnonymously,
   sendPasswordResetEmailLink,
+  getGoogleRedirectAuthResult,
 } from '@/lib/firebase'
 import { clientCookieUtils } from '@/lib/auth-cookies'
 import { getSigninReasonMessage, isMethodDisabled, type AuthMethod } from '@/lib/auth-flow'
@@ -19,6 +21,7 @@ import { trackClientEvent } from '@/lib/client-telemetry'
 export default function AuthPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const { user, loading } = useAuth()
   const [activeAuthMethod, setActiveAuthMethod] = useState<AuthMethod>(null)
   const [error, setError] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
@@ -48,6 +51,34 @@ export default function AuthPage() {
       setActiveAuthMethod(null)
     }
   }
+
+  useEffect(() => {
+    if (loading || !user || user.isAnonymous) {
+      return
+    }
+
+    void completeAuthNavigation(user, '/dashboard')
+  }, [loading, user])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const consumeRedirectResult = async () => {
+      const result = await getGoogleRedirectAuthResult()
+      if (cancelled || !result.error) {
+        return
+      }
+
+      setActiveAuthMethod(null)
+      setError('Failed to sign in with Google. Please try again.')
+    }
+
+    void consumeRedirectResult()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const completeAuthNavigation = async (user: User, destination: '/dashboard' | '/create') => {
     // Ensure auth cookies exist before navigating to server-guarded routes.
@@ -87,6 +118,8 @@ export default function AuthPage() {
       } else if (result.user) {
         void trackClientEvent('sign_in_google_succeeded')
         await completeAuthNavigation(result.user, '/dashboard')
+      } else if (result.code === 'redirect_started') {
+        setInfo('Redirecting to Google...')
       }
     } catch {
       if (isStaleAttempt(attemptId)) return
@@ -186,35 +219,19 @@ export default function AuthPage() {
   }
   
   return (
-    <div className="min-h-screen bg-dark-900 flex items-center justify-center py-12 px-4">
+    <div className="min-h-screen bg-dark-900 flex items-start justify-center px-4 pt-28 pb-12 sm:items-center sm:py-12">
       {/* Background effects */}
       <div className="fixed inset-0 bg-glow-gradient opacity-30 pointer-events-none" />
       <div className="fixed top-20 left-10 w-72 h-72 bg-brand-500/10 rounded-full blur-3xl" />
       <div className="fixed bottom-20 right-10 w-96 h-96 bg-gold-500/5 rounded-full blur-3xl" />
       
       <div className="relative w-full max-w-md">
-        {/* Logo */}
-        <div className="text-center mb-8">
-          <Link href="/" className="inline-flex items-center gap-3">
-            <Image 
-              src="/modern-mosaics-logo.png" 
-              alt="Modern Mosaics" 
-              width={48} 
-              height={48}
-              className="opacity-90"
-            />
-            <span className="text-2xl font-display font-semibold text-white">
-              Modern <span className="text-brand-400">Mosaics</span>
-            </span>
-          </Link>
-        </div>
-
         {/* Auth Card */}
-        <div className="glass-card p-8">
-          <h1 className="text-2xl font-display font-bold text-white text-center mb-2">
+        <div className="glass-card p-6 sm:p-8">
+          <h1 className="text-2xl sm:text-3xl font-display font-bold text-white text-center mb-2">
             {mode === 'signin' ? 'Welcome Back' : 'Create Account'}
           </h1>
-          <p className="text-dark-400 text-center mb-8">
+          <p className="text-dark-400 text-center mb-6 sm:mb-8 text-base sm:text-lg">
             {mode === 'signin' 
               ? 'Sign in to continue creating' 
               : 'Start your creative journey'}

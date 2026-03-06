@@ -3,8 +3,10 @@ import {
   getAuth, 
   GoogleAuthProvider, 
   signInWithPopup,
+  signInWithRedirect,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  getRedirectResult,
   sendPasswordResetEmail,
   signInAnonymously as firebaseSignInAnonymously,
   signOut as firebaseSignOut,
@@ -78,6 +80,7 @@ export type AuthFailureCode =
   | 'popup_closed'
   | 'popup_timeout'
   | 'popup_cancelled'
+  | 'redirect_started'
   | 'invalid_credentials'
   | 'email_already_in_use'
   | 'weak_password'
@@ -126,9 +129,23 @@ function mapAuthCode(code?: string): AuthFailureCode {
   }
 }
 
+function shouldUseGoogleRedirect(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  const ua = window.navigator.userAgent || '';
+  return /iPhone|iPad|iPod|Android|Mobile|CriOS|FxiOS/i.test(ua);
+}
+
 // Sign in with Google
 export const signInWithGoogle = async (): Promise<AuthResult> => {
   try {
+    if (shouldUseGoogleRedirect()) {
+      await signInWithRedirect(auth, googleProvider);
+      return { user: null, error: null, code: 'redirect_started' };
+    }
+
     const result = await withAuthTimeout(
       signInWithPopup(auth, googleProvider),
       GOOGLE_POPUP_TIMEOUT_MS
@@ -140,6 +157,21 @@ export const signInWithGoogle = async (): Promise<AuthResult> => {
     const timedOut = (authError as { timedOut?: boolean }).timedOut === true || code === 'popup_timeout';
     console.error('Error signing in with Google', authError);
     return { user: null, error: authError, code, timedOut };
+  }
+};
+
+export const getGoogleRedirectAuthResult = async (): Promise<AuthResult> => {
+  try {
+    const result = await getRedirectResult(auth);
+    if (!result) {
+      return { user: null, error: null, code: null };
+    }
+
+    return { user: result.user, error: null, code: null };
+  } catch (error) {
+    const authError = error as AuthError | Error;
+    console.error('Error completing Google redirect sign in', authError);
+    return { user: null, error: authError, code: mapAuthCode((authError as AuthError)?.code) };
   }
 };
 

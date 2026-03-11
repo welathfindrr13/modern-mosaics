@@ -3,6 +3,11 @@ import { requireAuth, getAuthenticatedUser } from '@/lib/api-auth';
 import { getGelatoClient } from '@/lib/gelato';
 import { OrderStatus, OrderStatusResponse } from '@/models/order';
 import { adminOrderOperations } from '@/utils/firestore-admin';
+import {
+  orderStatusRequestSchema,
+  parseJsonWithSchema,
+  parseSearchParamsWithSchema,
+} from '@/schemas/api';
 
 /**
  * GET handler for retrieving order status from Gelato
@@ -19,11 +24,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  // Get order ID from query params
-  const orderId = request.nextUrl.searchParams.get('orderId');
-  if (!orderId || orderId === 'undefined') {
-    return NextResponse.json({ error: 'Missing or invalid order ID' }, { status: 400 });
+  const parsedQuery = parseSearchParamsWithSchema(
+    request.nextUrl.searchParams,
+    orderStatusRequestSchema
+  );
+  if (!parsedQuery.success) {
+    return parsedQuery.response;
   }
+  const { orderId } = parsedQuery.data;
 
   try {
     const orderByGelatoId = await adminOrderOperations.getByUserAndGelatoOrderId(user.uid, orderId);
@@ -72,7 +80,7 @@ export async function GET(request: NextRequest) {
     }
     
     return NextResponse.json(
-      { error: `Failed to check order status: ${error.message}` },
+      { error: 'Failed to check order status' },
       { status: 500 }
     );
   }
@@ -96,22 +104,21 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    // Parse request body
-    const { orderId } = await request.json();
-    
-    if (!orderId) {
+    const parsedBody = await parseJsonWithSchema(request, orderStatusRequestSchema);
+    if (!parsedBody.success) {
       console.info('[ORDER_CANCEL_AUDIT]', JSON.stringify({
-        uid: user.uid,
-        orderId: null,
-        outcome: 'rejected_missing_order_id',
+        uidPresent: true,
+        orderIdPresent: false,
+        outcome: 'rejected_invalid_order_id',
         timestamp: new Date().toISOString(),
       }));
-      return NextResponse.json({ error: 'Missing order ID' }, { status: 400 });
+      return parsedBody.response;
     }
+    const { orderId } = parsedBody.data;
 
     console.info('[ORDER_CANCEL_AUDIT]', JSON.stringify({
-      uid: user.uid,
-      orderId,
+      uidPresent: true,
+      orderIdPresent: true,
       outcome: 'attempt',
       timestamp: new Date().toISOString(),
     }));
@@ -124,8 +131,8 @@ export async function POST(request: NextRequest) {
 
     if (!orderRecord) {
       console.info('[ORDER_CANCEL_AUDIT]', JSON.stringify({
-        uid: user.uid,
-        orderId,
+        uidPresent: true,
+        orderIdPresent: true,
         outcome: 'rejected_order_not_found',
         timestamp: new Date().toISOString(),
       }));
@@ -142,9 +149,9 @@ export async function POST(request: NextRequest) {
     // Can only cancel orders in QUEUED status
     if (orderDetails.status !== 'QUEUED') {
       console.info('[ORDER_CANCEL_AUDIT]', JSON.stringify({
-        uid: user.uid,
-        orderId,
-        gelatoOrderId,
+        uidPresent: true,
+        orderIdPresent: true,
+        gelatoOrderIdPresent: true,
         outcome: 'rejected_non_queued',
         orderStatus: orderDetails.status,
         timestamp: new Date().toISOString(),
@@ -163,9 +170,9 @@ export async function POST(request: NextRequest) {
     await gelatoClient.cancelOrder(gelatoOrderId);
 
     console.info('[ORDER_CANCEL_AUDIT]', JSON.stringify({
-      uid: user.uid,
-      orderId,
-      gelatoOrderId,
+      uidPresent: true,
+      orderIdPresent: true,
+      gelatoOrderIdPresent: true,
       outcome: 'cancelled',
       timestamp: new Date().toISOString(),
     }));
@@ -182,13 +189,14 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('[ORDER_STATUS] Cancellation failed:', error?.message || error);
     console.info('[ORDER_CANCEL_AUDIT]', JSON.stringify({
-      uid: user.uid,
+      uidPresent: true,
+      orderIdPresent: false,
       outcome: 'error',
       message: error?.message || 'unknown_error',
       timestamp: new Date().toISOString(),
     }));
     return NextResponse.json(
-      { error: `Failed to cancel order: ${error.message}` },
+      { error: 'Failed to cancel order' },
       { status: 500 }
     );
   }

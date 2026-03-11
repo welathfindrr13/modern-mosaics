@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, getAuthenticatedUser, getUserEmail } from '@/lib/api-auth';
 import { getServerStripe } from '@/lib/stripe';
-import { OrderCreateRequest } from '@/models/order';
 import {
   getTrustedUnitPriceForCurrency,
   deriveProductType,
@@ -13,8 +12,18 @@ import {
   validateCurrency,
   toStripeUnitAmount,
 } from '@/utils/fx';
-import { checkRateLimit, getRateLimitHeaders } from '@/lib/rate-limit';
+import {
+  buildRateLimitKey,
+  checkRateLimit,
+  createRateLimitResponse,
+  getRateLimitHeaders,
+  resolveRateLimitPolicy,
+} from '@/lib/rate-limit';
 import { generateConfirmationNonce } from '@/lib/confirmation-nonce';
+import {
+  checkoutSessionRequestSchema,
+  getValidationMessage,
+} from '@/schemas/api';
 
 // =============================================================================
 // HARDENED CHECKOUT SESSION ENDPOINT
@@ -23,23 +32,6 @@ import { generateConfirmationNonce } from '@/lib/confirmation-nonce';
 // Client-supplied prices, quantities, and currencies are IGNORED.
 // Currency is derived server-side from shipping address country.
 // =============================================================================
-
-/**
- * Interface for checkout session request
- */
-interface CheckoutSessionRequest extends Omit<OrderCreateRequest, 'cropParams'> {
-  productPrice: number;     // IGNORED - computed server-side
-  shippingCost: number;     // Trusted (from Gelato quote in derived currency)
-  shippingCurrency?: string; // Expected to match derived currency
-  total: number;            // IGNORED - computed server-side
-  productName: string;
-  transforms?: string;
-  sizeKey?: string;
-  // v1: Crop params for deterministic cropping
-  cropParams?: string;      // Serialized crop params (x,y,width,height,rotation)
-  sourceWidth?: number;     // Source image width
-  sourceHeight?: number;    // Source image height
-}
 
 /**
  * POST handler for creating Stripe checkout sessions
@@ -64,16 +56,39 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized', code: 'UNAUTHORIZED' }, { status: 401 });
     }
 
-    const rateLimit = checkRateLimit(`checkout:session:${user.uid}`, 12, 60_000);
+    const rateLimitPolicy = resolveRateLimitPolicy('checkoutSession', user);
+    const rateLimit = await checkRateLimit(
+      buildRateLimitKey('checkout:session', request, user.uid),
+      rateLimitPolicy.limit,
+      rateLimitPolicy.windowMs
+    );
     if (!rateLimit.allowed) {
-      return NextResponse.json(
-        { error: 'Too many checkout attempts. Please wait and try again.', code: 'RATE_LIMITED' },
-        { status: 429, headers: getRateLimitHeaders(rateLimit) }
+      return createRateLimitResponse(
+        rateLimitPolicy.message,
+        rateLimit,
+        rateLimitPolicy.body
       );
     }
 
-    // Parse request body
-    const orderData: CheckoutSessionRequest = await request.json();
+    let rawBody: unknown;
+    try {
+      rawBody = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid JSON body', code: 'INVALID_INPUT' },
+        { status: 400 }
+      );
+    }
+
+    const parsedBody = checkoutSessionRequestSchema.safeParse(rawBody);
+    if (!parsedBody.success) {
+      return NextResponse.json(
+        { error: getValidationMessage(parsedBody.error), code: 'INVALID_INPUT' },
+        { status: 400 }
+      );
+    }
+
+    const orderData = parsedBody.data;
     
     // ==========================================================================
     // QUANTITY ENFORCEMENT (MVP: only quantity=1 allowed)
@@ -88,20 +103,6 @@ export async function POST(request: NextRequest) {
     
     // ==========================================================================
     // VALIDATE REQUIRED FIELDS
-    // ==========================================================================
-    if (!orderData.productUid || 
-        !orderData.imagePublicId || 
-        !orderData.shippingAddress || 
-        !orderData.shippingMethodUid ||
-        !orderData.productName) {
-      return NextResponse.json(
-        { error: 'Missing required order information', code: 'INVALID_INPUT' }, 
-        { status: 400 }
-      );
-    }
-
-    // ==========================================================================
-    // DERIVE CURRENCY SERVER-SIDE (ignore client currency)
     // ==========================================================================
     const countryCode = orderData.shippingAddress.country?.toUpperCase();
     if (!countryCode) {

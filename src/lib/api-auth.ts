@@ -2,13 +2,17 @@ import { cookies } from 'next/headers'
 import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest, verifyIdToken } from './firebase-admin-auth'
 
+function logAuthenticationFailure() {
+  console.error('Authentication error');
+}
+
 // Get authenticated user from Firebase ID token
 export async function getAuthenticatedUser(req: NextRequest) {
   try {
     const user = await getUserFromRequest(req);
     return user;
-  } catch (error) {
-    console.error('Authentication error:', error);
+  } catch {
+    logAuthenticationFailure();
     return null;
   }
 }
@@ -34,9 +38,14 @@ export async function getAuthenticatedUserFromCookies() {
       emailVerified: decodedToken.email_verified || false,
       name: decodedToken.name || null,
       picture: decodedToken.picture || null,
+      isAnonymous: decodedToken.firebase?.sign_in_provider === 'anonymous',
+      signInProvider:
+        typeof decodedToken.firebase?.sign_in_provider === 'string'
+          ? decodedToken.firebase.sign_in_provider
+          : null,
     };
-  } catch (error) {
-    console.error('Authentication error:', error);
+  } catch {
+    logAuthenticationFailure();
     return null;
   }
 }
@@ -72,4 +81,57 @@ export async function requireAuth(req: NextRequest) {
   }
   
   return null; // Continue if authenticated
+}
+
+function getDebugAdminAllowlist(): Set<string> {
+  const raw = process.env.DEBUG_ADMIN_EMAILS || '';
+  return new Set(
+    raw
+      .split(',')
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+
+export function isDebugAdminEmail(email: string | null | undefined): boolean {
+  if (!email) {
+    return false;
+  }
+
+  return getDebugAdminAllowlist().has(email.trim().toLowerCase());
+}
+
+type DebugAccessFailureReason = 'unauthenticated' | 'not_allowlisted';
+
+function createDebugAccessResponse(reason: DebugAccessFailureReason) {
+  return process.env.NODE_ENV === 'production'
+    ? NextResponse.json({ error: 'Not Found' }, { status: 404 })
+    : NextResponse.json({ error: 'Unauthorized', reason }, { status: 403 });
+}
+
+export async function requireDebugAdmin(
+  req: NextRequest,
+  path: string
+): Promise<NextResponse | null> {
+  const user = await getAuthenticatedUser(req);
+  const normalizedEmail = user?.email?.trim().toLowerCase() ?? null;
+  const allowlisted = isDebugAdminEmail(normalizedEmail);
+
+  if (allowlisted) {
+    return null;
+  }
+
+  const reason: DebugAccessFailureReason = normalizedEmail ? 'not_allowlisted' : 'unauthenticated';
+
+  console.warn(
+    '[DEBUG_ACCESS_DENIED]',
+    JSON.stringify({
+      path,
+      reason,
+      env: process.env.NODE_ENV || 'unknown',
+      timestamp: new Date().toISOString(),
+    })
+  );
+
+  return createDebugAccessResponse(reason);
 }

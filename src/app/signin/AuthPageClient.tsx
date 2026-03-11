@@ -70,7 +70,24 @@ export default function AuthPage() {
       }
 
       setActiveAuthMethod(null)
-      setError('Failed to sign in with Google. Please try again.')
+      const authErrorCode = 'code' in result.error ? result.error.code : null
+      void trackClientEvent('sign_in_google_failed', {
+        reason: result.code || 'unknown',
+        authErrorCode,
+        authErrorMessage: result.error.message,
+        phase: 'redirect_result',
+      })
+
+      switch (result.code) {
+        case 'unauthorized_domain':
+          setError('Google sign-in is not authorized for this domain yet.')
+          break
+        case 'operation_not_supported':
+          setError('Google sign-in is not supported in this browser configuration.')
+          break
+        default:
+          setError('Failed to sign in with Google. Please try again.')
+      }
     }
 
     void consumeRedirectResult()
@@ -94,9 +111,13 @@ export default function AuthPage() {
       if (isStaleAttempt(attemptId)) return
 
       if (result.error) {
+        const authErrorCode = 'code' in result.error ? result.error.code : null
         void trackClientEvent('sign_in_google_failed', {
           reason: result.code || 'unknown',
           timedOut: result.timedOut === true,
+          authErrorCode,
+          authErrorMessage: result.error.message,
+          phase: 'start',
         })
 
         switch (result.code) {
@@ -111,6 +132,12 @@ export default function AuthPage() {
             break
           case 'popup_cancelled':
             setError('A previous Google sign-in request was cancelled. Please try again.')
+            break
+          case 'unauthorized_domain':
+            setError('Google sign-in is not authorized for this domain yet.')
+            break
+          case 'operation_not_supported':
+            setError('Google sign-in is not supported in this browser configuration.')
             break
           default:
             setError('Failed to sign in with Google. Please try again.')

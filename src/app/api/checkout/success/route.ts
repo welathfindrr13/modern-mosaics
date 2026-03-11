@@ -6,6 +6,10 @@ import {
   getSessionFulfillmentState,
 } from '@/lib/checkout-fulfillment';
 import { matchesConfirmationNonce, isValidConfirmationNonce } from '@/lib/confirmation-nonce';
+import {
+  checkoutSuccessQuerySchema,
+  getValidationMessage,
+} from '@/schemas/api';
 
 /**
  * Read-only checkout status endpoint.
@@ -13,28 +17,23 @@ import { matchesConfirmationNonce, isValidConfirmationNonce } from '@/lib/confir
  */
 export async function GET(request: NextRequest) {
   try {
-    const sessionId = request.nextUrl.searchParams.get('session_id');
-    const confirmationNonce =
-      request.nextUrl.searchParams.get('confirmation_nonce') ||
-      request.nextUrl.searchParams.get('confirmationNonce');
-
-    if (!sessionId) {
+    const parsedQuery = checkoutSuccessQuerySchema.safeParse({
+      session_id: request.nextUrl.searchParams.get('session_id'),
+      confirmationNonce:
+        request.nextUrl.searchParams.get('confirmationNonce') ??
+        request.nextUrl.searchParams.get('confirmation_nonce'),
+    });
+    if (!parsedQuery.success) {
       return NextResponse.json(
-        { error: 'Missing session ID', code: 'INVALID_INPUT' },
+        { error: getValidationMessage(parsedQuery.error), code: 'INVALID_INPUT' },
         { status: 400 }
       );
     }
+
+    const { session_id: cleanSessionId, confirmationNonce } = parsedQuery.data;
     if (!isValidConfirmationNonce(confirmationNonce)) {
       return NextResponse.json(
         { error: 'Missing or invalid confirmation nonce', code: 'INVALID_INPUT' },
-        { status: 400 }
-      );
-    }
-
-    const cleanSessionId = sessionId.split('?')[0].trim();
-    if (!cleanSessionId.startsWith('cs_')) {
-      return NextResponse.json(
-        { error: 'Invalid session ID format', code: 'INVALID_INPUT' },
         { status: 400 }
       );
     }

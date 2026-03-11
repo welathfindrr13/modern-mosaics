@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth, getUserEmail } from '@/lib/api-auth';
+import crypto from 'crypto';
+import { requireDebugAdmin } from '@/lib/api-auth';
 import { adminDb } from '@/utils/firestore-admin';
 
 const SESSION_FULFILLMENT_COLLECTION = 'stripeSessionFulfillmentState';
@@ -9,17 +10,16 @@ const MAX_RETURNED_ITEMS = 200;
 
 type OpsQueueState = 'failed_retryable' | 'failed_non_retryable';
 
-function isDebugAdmin(email: string | null): boolean {
-  if (!email) return false;
-  const allowlist = (process.env.DEBUG_ADMIN_EMAILS || '')
-    .split(',')
-    .map((item) => item.trim().toLowerCase())
-    .filter(Boolean);
-  return allowlist.includes(email.toLowerCase());
-}
-
 function parseUpdatedAtMs(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function redactIdentifier(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length === 0) {
+    return null;
+  }
+
+  return crypto.createHash('sha256').update(value).digest('hex').slice(0, 12);
 }
 
 async function getOpsQueueItems(state: OpsQueueState) {
@@ -32,12 +32,12 @@ async function getOpsQueueItems(state: OpsQueueState) {
   return snap.docs.map((doc) => {
     const data = doc.data() as Record<string, unknown>;
     return {
-      id: doc.id,
+      recordRef: redactIdentifier(doc.id),
       state,
-      stripeSessionId: typeof data.stripeSessionId === 'string' ? data.stripeSessionId : null,
-      eventId: typeof data.eventId === 'string' ? data.eventId : null,
+      stripeSessionRef: redactIdentifier(data.stripeSessionId),
+      eventRef: redactIdentifier(data.eventId),
       reasonCode: typeof data.reasonCode === 'string' ? data.reasonCode : null,
-      reasonMessage: typeof data.reasonMessage === 'string' ? data.reasonMessage : null,
+      hasReasonMessage: typeof data.reasonMessage === 'string' && data.reasonMessage.length > 0,
       retryable: data.retryable === true,
       createdAtMs: parseUpdatedAtMs(data.createdAtMs),
       updatedAtMs: parseUpdatedAtMs(data.updatedAtMs),
@@ -47,27 +47,9 @@ async function getOpsQueueItems(state: OpsQueueState) {
 
 export async function GET(request: NextRequest) {
   if (process.env.NODE_ENV !== 'development') {
-    const authResponse = await requireAuth(request);
-    if (authResponse) {
-      console.warn('[DEBUG_ACCESS_DENIED]', JSON.stringify({
-        path: '/api/debug/fulfillment-ops',
-        reason: 'unauthenticated',
-        env: process.env.NODE_ENV,
-        timestamp: new Date().toISOString(),
-      }));
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    }
-
-    const email = await getUserEmail(request);
-    if (!isDebugAdmin(email)) {
-      console.warn('[DEBUG_ACCESS_DENIED]', JSON.stringify({
-        path: '/api/debug/fulfillment-ops',
-        reason: 'not_allowlisted',
-        hasEmail: Boolean(email),
-        env: process.env.NODE_ENV,
-        timestamp: new Date().toISOString(),
-      }));
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    const accessResponse = await requireDebugAdmin(request, '/api/debug/fulfillment-ops');
+    if (accessResponse) {
+      return accessResponse;
     }
   }
 
@@ -85,11 +67,11 @@ export async function GET(request: NextRequest) {
       const data = doc.data() as Record<string, unknown>;
       const updatedAtMs = parseUpdatedAtMs(data.updatedAtMs);
       return {
-        id: doc.id,
+        recordRef: redactIdentifier(doc.id),
         status: typeof data.status === 'string' ? data.status : null,
         attempts: typeof data.attempts === 'number' ? data.attempts : null,
-        userUid: typeof data.userUid === 'string' ? data.userUid : null,
-        stripeEventId: typeof data.stripeEventId === 'string' ? data.stripeEventId : null,
+        userRef: redactIdentifier(data.userUid),
+        eventRef: redactIdentifier(data.stripeEventId),
         updatedAtMs,
         stale: updatedAtMs > 0 ? updatedAtMs < staleBeforeMs : true,
       };

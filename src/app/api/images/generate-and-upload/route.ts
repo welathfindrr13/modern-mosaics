@@ -14,7 +14,19 @@ import { requireAuth, getAuthenticatedUser } from '@/lib/api-auth';
 import { uploadB64Stream } from '@/lib/cloudinary-upload';
 import { adminImageOperations, adminUserOperations } from '@/utils/firestore-admin';
 import crypto from 'crypto';
-import { checkRateLimit, getRateLimitHeaders } from '@/lib/rate-limit';
+import {
+  buildRateLimitKey,
+  checkRateLimit,
+  createRateLimitResponse,
+  enforceContentLengthLimit,
+  getRateLimitAudience,
+  getRateLimitHeaders,
+  resolveRateLimitPolicy,
+} from '@/lib/rate-limit';
+import {
+  generateAndUploadRequestSchema,
+  parseJsonWithSchema,
+} from '@/schemas/api';
 
 // =============================================================================
 // RELIABILITY: Server-side timeout constants
@@ -77,15 +89,6 @@ function createErrorResponse(
   }, { status: statusCode });
 }
 
-export interface GenerateAndUploadRequest {
-  /** Text prompt for image generation */
-  prompt: string;
-  /** Which AI provider to use (default: 'openai') */
-  provider?: ImageProviderName;
-  /** Whether to save the image to the user's gallery (default: true) */
-  saveToGallery?: boolean;
-}
-
 export interface GenerateAndUploadResponse {
   /** Cloudinary secure URL */
   imageUrl: string;
@@ -110,6 +113,10 @@ export async function POST(req: NextRequest) {
   const requestId = generateRequestId();
   const requestStart = Date.now();
   const durations: Record<string, number> = {};
+  const payloadTooLarge = enforceContentLengthLimit(req, 16 * 1024);
+  if (payloadTooLarge) {
+    return payloadTooLarge;
+  }
   
   console.log(`[Generate+Upload] [${requestId}] API called`);
   
@@ -133,42 +140,57 @@ export async function POST(req: NextRequest) {
       return createErrorResponse(requestId, 'User not found', 'auth', 401, durations);
     }
 
-    const rateLimit = checkRateLimit(`images:generate-upload:${user.uid}`, 10, 60_000);
+    const rateLimitPolicy = resolveRateLimitPolicy('imagesGenerateUpload', user);
+    const rateLimitAudience = getRateLimitAudience(user);
+    const rateLimit = await checkRateLimit(
+      buildRateLimitKey('images:generate-upload', req, user.uid),
+      rateLimitPolicy.limit,
+      rateLimitPolicy.windowMs
+    );
     if (!rateLimit.allowed) {
-      return NextResponse.json(
+      console.warn(
+        `[Generate+Upload] [${requestId}] Rate limit denied: audience=${rateLimitAudience}`
+      );
+      return createRateLimitResponse(
+        rateLimitPolicy.message,
+        rateLimit,
         {
-          error: 'Too many image generation requests. Please wait and try again.',
           step: 'validation',
           requestId,
           durations,
-        },
-        { status: 429, headers: getRateLimitHeaders(rateLimit) }
+          ...rateLimitPolicy.body,
+        }
       );
     }
-    console.log(`[Generate+Upload] [${requestId}] Auth complete: ${durations.auth}ms`);
+    console.log(
+      `[Generate+Upload] [${requestId}] Auth complete: ${durations.auth}ms, audience=${rateLimitAudience}, provider=${user.signInProvider ?? 'unknown'}`
+    );
 
     // =========================================================================
     // STEP 2: Parse and validate request
     // =========================================================================
-    const body: GenerateAndUploadRequest = await req.json();
-    const { 
-      prompt, 
-      provider = 'openai', 
-      saveToGallery = true 
-    } = body;
+    const parsedBody = await parseJsonWithSchema(req, generateAndUploadRequestSchema);
+    if (!parsedBody.success) {
+      const errorBody = await parsedBody.response.json();
+      return createErrorResponse(
+        requestId,
+        typeof errorBody.error === 'string' ? errorBody.error : 'Invalid request body',
+        'validation',
+        400,
+        durations
+      );
+    }
+
+    const {
+      prompt,
+      provider,
+      saveToGallery,
+    } = parsedBody.data;
     
     // OBSERVABILITY: Log prompt length, not content (privacy)
     const promptLength = prompt?.length || 0;
     console.log(`[Generate+Upload] [${requestId}] Provider: ${provider}, promptLength: ${promptLength}`);
     
-    if (!prompt) {
-      return createErrorResponse(requestId, 'Prompt is required', 'validation', 400, durations);
-    }
-
-    if (provider !== 'openai' && provider !== 'gemini') {
-      return createErrorResponse(requestId, `Invalid provider: ${provider}`, 'validation', 400, durations);
-    }
-
     if (!isProviderAvailable(provider)) {
       return createErrorResponse(requestId, `Provider ${provider} is not configured`, 'validation', 503, durations);
     }
@@ -207,7 +229,7 @@ export async function POST(req: NextRequest) {
     );
     
     durations.cloudinary = Date.now() - cloudinaryStart;
-    console.log(`[Generate+Upload] [${requestId}] Uploaded to Cloudinary in ${durations.cloudinary}ms: ${uploadResult.public_id}`);
+    console.log(`[Generate+Upload] [${requestId}] Uploaded to Cloudinary in ${durations.cloudinary}ms`);
     
     // =========================================================================
     // STEP 5: Save to Firestore (10s timeout, non-blocking)
@@ -252,7 +274,7 @@ export async function POST(req: NextRequest) {
         );
         
         durations.firestore = Date.now() - firestoreStart;
-        console.log(`[Generate+Upload] [${requestId}] Saved to Firestore in ${durations.firestore}ms: ${imageId}`);
+        console.log(`[Generate+Upload] [${requestId}] Saved to Firestore in ${durations.firestore}ms`);
       } catch (firestoreError: any) {
         durations.firestore = Date.now() - firestoreStart;
         // RELIABILITY: Log but don't fail - Cloudinary upload was successful

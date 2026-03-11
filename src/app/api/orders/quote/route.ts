@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, getUserEmail, getAuthenticatedUser } from '@/lib/api-auth';
 import { getGelatoClient, GelatoQuoteRequest } from '@/lib/gelato';
-import { OrderQuoteRequest } from '@/models/order';
-import { 
+import {
   getTrustedUnitPriceForCurrency,
   deriveProductType,
   deriveSizeKey,
@@ -10,7 +9,14 @@ import {
 } from '@/utils/priceUtils';
 import { getCurrencyForCountry } from '@/utils/currency';
 import { validateCurrency } from '@/utils/fx';
-import { checkRateLimit, getRateLimitHeaders } from '@/lib/rate-limit';
+import {
+  buildRateLimitKey,
+  checkRateLimit,
+  createRateLimitResponse,
+  getRateLimitHeaders,
+  resolveRateLimitPolicy,
+} from '@/lib/rate-limit';
+import { getValidationMessage, orderQuoteRequestSchema } from '@/schemas/api';
 
 /**
  * POST handler for getting shipping quotes from Gelato
@@ -32,37 +38,39 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized', code: 'UNAUTHORIZED' }, { status: 401 });
     }
 
-    const rateLimit = checkRateLimit(`quote:${user.uid}`, 25, 60_000);
+    const rateLimitPolicy = resolveRateLimitPolicy('ordersQuote', user);
+    const rateLimit = await checkRateLimit(
+      buildRateLimitKey('orders:quote', request, user.uid),
+      rateLimitPolicy.limit,
+      rateLimitPolicy.windowMs
+    );
     if (!rateLimit.allowed) {
-      return NextResponse.json(
-        { error: 'Too many quote requests. Please wait and try again.', code: 'RATE_LIMITED' },
-        { status: 429, headers: getRateLimitHeaders(rateLimit) }
+      return createRateLimitResponse(
+        rateLimitPolicy.message,
+        rateLimit,
+        rateLimitPolicy.body
       );
     }
 
-    // Parse request body
-    const quoteData: OrderQuoteRequest = await request.json();
-    
-    // Validate required fields
-    if (!quoteData.productUid || !quoteData.shippingAddress) {
+    let rawBody: unknown;
+    try {
+      rawBody = await request.json();
+    } catch {
       return NextResponse.json(
-        { error: 'Missing required information: productUid or shippingAddress', code: 'INVALID_INPUT' }, 
+        { error: 'Invalid JSON body', code: 'INVALID_INPUT' },
         { status: 400 }
       );
     }
-    
-    // Ensure required address fields are present
-    const requiredAddressFields = ['firstName', 'lastName', 'line1', 'city', 'postalCode', 'country'];
-    const missingFields = requiredAddressFields.filter(
-      field => !quoteData.shippingAddress[field as keyof typeof quoteData.shippingAddress]
-    );
-    
-    if (missingFields.length > 0) {
+
+    const parsedBody = orderQuoteRequestSchema.safeParse(rawBody);
+    if (!parsedBody.success) {
       return NextResponse.json(
-        { error: `Missing required address fields: ${missingFields.join(', ')}`, code: 'INVALID_INPUT' }, 
+        { error: getValidationMessage(parsedBody.error), code: 'INVALID_INPUT' },
         { status: 400 }
       );
     }
+
+    const quoteData = parsedBody.data;
     
     // ==========================================================================
     // DERIVE CURRENCY SERVER-SIDE (ignore client currency)

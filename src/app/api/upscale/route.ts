@@ -11,6 +11,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, getAuthenticatedUser } from '@/lib/api-auth';
 import { upscaleImageWithDimensions, determineUpscaleStrategy } from '@/lib/replicate';
 import { getServerCloudinary } from '@/lib/cloudinary';
+import {
+  buildRateLimitKey,
+  checkRateLimit,
+  createRateLimitResponse,
+  enforceContentLengthLimit,
+  resolveRateLimitPolicy,
+} from '@/lib/rate-limit';
+import {
+  parseJsonWithSchema,
+  upscaleRequestSchema,
+} from '@/schemas/api';
 
 export interface UpscaleRequestBody {
   /** URL of the image to upscale (Cloudinary or other public URL) */
@@ -43,10 +54,12 @@ export interface UpscaleResponse {
 }
 
 export async function POST(req: NextRequest) {
-  console.log('[Upscale API] Request received');
+  const payloadTooLarge = enforceContentLengthLimit(req, 8 * 1024);
+  if (payloadTooLarge) {
+    return payloadTooLarge;
+  }
 
   try {
-    // Verify authentication
     const authError = await requireAuth(req);
     if (authError) {
       return authError;
@@ -57,8 +70,26 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'User not found' }, { status: 401 });
     }
 
-    // Parse request body
-    const body: UpscaleRequestBody = await req.json();
+    const rateLimitPolicy = resolveRateLimitPolicy('imagesUpscale', user);
+    const rateLimit = await checkRateLimit(
+      buildRateLimitKey('images:upscale', req, user.uid),
+      rateLimitPolicy.limit,
+      rateLimitPolicy.windowMs
+    );
+    if (!rateLimit.allowed) {
+      return createRateLimitResponse(
+        rateLimitPolicy.message,
+        rateLimit,
+        rateLimitPolicy.body
+      );
+    }
+
+    const parsedBody = await parseJsonWithSchema(req, upscaleRequestSchema);
+    if (!parsedBody.success) {
+      return parsedBody.response;
+    }
+
+    const body: UpscaleRequestBody = parsedBody.data;
     const {
       imageUrl,
       sourceWidth,
@@ -68,25 +99,22 @@ export async function POST(req: NextRequest) {
       uploadToCloudinary = true,
     } = body;
 
-    // Validate required fields
-    if (!imageUrl) {
-      return NextResponse.json({ error: 'imageUrl is required' }, { status: 400 });
-    }
-    if (!sourceWidth || !sourceHeight) {
-      return NextResponse.json({ error: 'sourceWidth and sourceHeight are required' }, { status: 400 });
-    }
-    if (!targetWidth || !targetHeight) {
-      return NextResponse.json({ error: 'targetWidth and targetHeight are required' }, { status: 400 });
-    }
+    console.log(
+      '[UPSCALE_REQUEST]',
+      JSON.stringify({
+        sourceWidth,
+        sourceHeight,
+        targetWidth,
+        targetHeight,
+        uploadToCloudinary,
+        timestamp: new Date().toISOString(),
+      })
+    );
 
-    console.log(`[Upscale API] User: ${user.email}`);
-    console.log(`[Upscale API] Source: ${sourceWidth}x${sourceHeight}, Target: ${targetWidth}x${targetHeight}`);
-
-    // Check if upscaling is actually needed
     const strategy = determineUpscaleStrategy(sourceWidth, sourceHeight, targetWidth, targetHeight);
     
     if (!strategy) {
-      console.log('[Upscale API] No upscaling needed, returning original');
+      console.log('[UPSCALE_REQUEST] No upscaling needed');
       return NextResponse.json({
         upscaledUrl: imageUrl,
         width: sourceWidth,
@@ -96,8 +124,6 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Perform upscaling
-    console.log('[Upscale API] Starting upscale...');
     const result = await upscaleImageWithDimensions(
       imageUrl,
       sourceWidth,
@@ -106,15 +132,10 @@ export async function POST(req: NextRequest) {
       targetHeight
     );
 
-    console.log(`[Upscale API] Upscale complete: ${result.width}x${result.height} in ${result.processingTimeMs}ms`);
-
     let finalUrl = result.url;
     let publicId: string | undefined;
 
-    // Upload to Cloudinary for permanent storage
     if (uploadToCloudinary) {
-      console.log('[Upscale API] Uploading to Cloudinary...');
-      
       try {
         const cloudinary = await getServerCloudinary();
         
@@ -133,12 +154,8 @@ export async function POST(req: NextRequest) {
 
         finalUrl = uploadResult.secure_url;
         publicId = uploadResult.public_id;
-        
-        console.log(`[Upscale API] Uploaded to Cloudinary: ${publicId}`);
       } catch (cloudinaryError: any) {
-        console.error('[Upscale API] Cloudinary upload failed:', cloudinaryError);
-        // Return Replicate URL if Cloudinary fails (it's temporary but usable)
-        console.log('[Upscale API] Returning Replicate URL instead');
+        console.error('[UPSCALE_REQUEST] Cloudinary upload failed:', cloudinaryError?.message || cloudinaryError);
       }
     }
 
@@ -154,7 +171,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(response);
 
   } catch (error: any) {
-    console.error('[Upscale API] Error:', error);
+    console.error('[UPSCALE_REQUEST] Error:', error?.message || error);
 
     // Handle specific errors
     if (error.message?.includes('REPLICATE_API_TOKEN')) {
@@ -172,7 +189,7 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json(
-      { error: `Upscaling failed: ${error.message}` },
+      { error: 'Upscaling failed. Please try again.' },
       { status: 500 }
     );
   }

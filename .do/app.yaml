@@ -14,6 +14,13 @@ services:
     instance_count: 1
     instance_size_slug: basic-xs
     http_port: 3000
+    envs:
+      - key: RATE_LIMIT_STORE
+        scope: RUN_AND_BUILD_TIME
+        value: redis
+      - key: RATE_LIMIT_KEY_PREFIX
+        scope: RUN_AND_BUILD_TIME
+        value: modern-mosaics:ratelimit
     health_check:
       http_path: /api/health
       initial_delay_seconds: 20

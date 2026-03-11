@@ -2,49 +2,76 @@ import { NextResponse } from 'next/server';
 import { NextRequest } from 'next/server';
 import { requireAuth, getAuthenticatedUser } from '@/lib/api-auth';
 import { getServerCloudinary } from '@/lib/cloudinary';
+import { uploadB64Stream } from '@/lib/cloudinary-upload';
 import { adminImageOperations, adminUserOperations } from '@/utils/firestore-admin';
-import { checkRateLimit, getRateLimitHeaders } from '@/lib/rate-limit';
+import {
+  buildRateLimitKey,
+  checkRateLimit,
+  createPayloadTooLargeResponse,
+  createRateLimitResponse,
+  enforceContentLengthLimit,
+  getRateLimitHeaders,
+  resolveRateLimitPolicy,
+} from '@/lib/rate-limit';
+import {
+  estimateBase64DecodedBytes,
+  extractBase64ImageData,
+  parseJsonWithSchema,
+  uploadImageRequestSchema,
+} from '@/schemas/api';
+
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 
 export async function POST(req: NextRequest) {
   try {
-    // Verify user is authenticated
-    console.log("Image upload API called");
+    const payloadTooLarge = enforceContentLengthLimit(req, MAX_UPLOAD_BYTES);
+    if (payloadTooLarge) {
+      return payloadTooLarge;
+    }
+
     const authError = await requireAuth(req);
     if (authError) {
-      console.error("Authentication failed:", authError);
       return authError;
     }
     
-    // Get authenticated user
     const user = await getAuthenticatedUser(req);
     if (!user) {
-      console.error("User not found after authentication");
       return NextResponse.json({ error: 'User not found' }, { status: 401 });
     }
-    console.log("User authenticated:", user.email);
 
-    const rateLimit = checkRateLimit(`images:upload:${user.uid}`, 20, 60_000);
+    const rateLimitPolicy = resolveRateLimitPolicy('imagesUpload', user);
+    const rateLimit = await checkRateLimit(
+      buildRateLimitKey('images:upload', req, user.uid),
+      rateLimitPolicy.limit,
+      rateLimitPolicy.windowMs
+    );
     if (!rateLimit.allowed) {
-      return NextResponse.json(
-        { error: 'Too many upload requests. Please wait and try again.' },
-        { status: 429, headers: getRateLimitHeaders(rateLimit) }
+      return createRateLimitResponse(
+        rateLimitPolicy.message,
+        rateLimit,
+        rateLimitPolicy.body
       );
     }
     
-    // Get the image data from request
-    const { imageUrl, prompt, save = true, cloudinaryPublicId } = await req.json();
-    
-    // Check if we have either an imageUrl or cloudinaryPublicId
-    if (!imageUrl && !cloudinaryPublicId) {
-      console.log("Error: Neither image URL nor cloudinaryPublicId provided");
-      return NextResponse.json({ error: 'Either imageUrl or cloudinaryPublicId is required' }, { status: 400 });
+    const parsedBody = await parseJsonWithSchema(req, uploadImageRequestSchema);
+    if (!parsedBody.success) {
+      return parsedBody.response;
     }
-    
-    console.log("Prompt received:", prompt);
-    console.log("Save to gallery:", save);
-    console.log("Uploading image to Cloudinary...");
-    
-    // Determine the appropriate folder
+
+    const { imageUrl, prompt, save, cloudinaryPublicId } = parsedBody.data;
+
+    if (imageUrl) {
+      const encodedBytes = Buffer.byteLength(imageUrl, 'utf8');
+      if (encodedBytes > MAX_UPLOAD_BYTES) {
+        return createPayloadTooLargeResponse(MAX_UPLOAD_BYTES);
+      }
+
+      const decodedBytes = estimateBase64DecodedBytes(extractBase64ImageData(imageUrl));
+      if (decodedBytes > MAX_UPLOAD_BYTES) {
+        return createPayloadTooLargeResponse(MAX_UPLOAD_BYTES);
+      }
+    }
+
     let folder;
     const userFolder = user.uid.replace(/[^a-zA-Z0-9]/g, '_');
     
@@ -56,19 +83,16 @@ export async function POST(req: NextRequest) {
       folder = 'modern-mosaics-processing';
     }
     
-    // Setup tags based on save parameter
     const tags = ['modern-mosaics', 'generated-image'];
     if (!save) {
       tags.push('temp');
     }
     
-    // Get Cloudinary instance
     let cloudinary;
     try {
       cloudinary = await getServerCloudinary();
-      console.log("Cloudinary instance obtained successfully");
     } catch (cloudinaryError) {
-      console.error("Failed to get Cloudinary instance:", cloudinaryError);
+      console.error('[IMAGE_UPLOAD] Cloudinary init failed:', cloudinaryError);
       return NextResponse.json({ error: 'Cloudinary configuration error' }, { status: 500 });
     }
     
@@ -76,55 +100,39 @@ export async function POST(req: NextRequest) {
     
     try {
       if (cloudinaryPublicId) {
-        // If we have a Cloudinary public ID (for example, after upscaling)
-        console.log(`Using existing Cloudinary image: ${cloudinaryPublicId}`);
-        
-        // Get the URL of the existing image
         const existingUrl = cloudinary.url(cloudinaryPublicId, { secure: true });
-        console.log(`Got URL for existing image: ${existingUrl}`);
-        
-        // Upload the existing image to the new location
         uploadResult = await cloudinary.uploader.upload(existingUrl, {
           folder,
           tags,
           context: {
             prompt: prompt || 'No prompt provided',
-            user_email: user.email || 'anonymous',
             save_to_gallery: save ? 'true' : 'false'
           }
         });
       } else {
-        // Otherwise upload the image URL to Cloudinary
-        console.log(`Uploading image URL to Cloudinary, imageUrl type:`, typeof imageUrl);
-        console.log(`Image URL length:`, imageUrl?.length);
-        console.log(`Image URL starts with:`, imageUrl?.substring(0, 100));
-        
-        uploadResult = await cloudinary.uploader.upload(imageUrl, {
+        if (!imageUrl) {
+          return NextResponse.json({ error: 'imageUrl is required' }, { status: 400 });
+        }
+
+        uploadResult = await uploadB64Stream(user.uid, extractBase64ImageData(imageUrl), {
           folder,
           tags,
           context: {
             prompt: prompt || 'No prompt provided',
-            user_email: user.email || 'anonymous',
             save_to_gallery: save ? 'true' : 'false'
           }
         });
       }
     } catch (uploadError: any) {
-      console.error('Cloudinary upload failed:', uploadError);
+      console.error('[IMAGE_UPLOAD] Cloudinary upload failed:', uploadError?.message || uploadError);
       return NextResponse.json({ 
-        error: `Failed to upload to Cloudinary: ${uploadError.message || 'Unknown error'}` 
+        error: 'Failed to upload to Cloudinary.' 
       }, { status: 500 });
     }
-    
-    console.log("Image uploaded successfully:", uploadResult.public_id);
-    
-    // If saving to gallery, also save metadata to Firestore
+
     if (save && user.email) {
       try {
-        // Use Firebase UID instead of email-based ID
         const userId = user.uid;
-        
-        // Ensure user document exists
         await adminUserOperations.createOrUpdate(userId, {
           email: user.email,
           firebaseUid: user.uid,
@@ -134,9 +142,8 @@ export async function POST(req: NextRequest) {
             notifications: true
           }
         });
-        
-        // Save image metadata to Firestore
-        const imageId = await adminImageOperations.create(userId, {
+
+        await adminImageOperations.create(userId, {
           cloudinaryPublicId: uploadResult.public_id,
           cloudinaryUrl: uploadResult.secure_url,
           prompt: prompt || '',
@@ -148,11 +155,8 @@ export async function POST(req: NextRequest) {
           },
           tags: ['generated']
         });
-        
-        console.log("Image metadata saved to Firestore:", imageId);
       } catch (firestoreError) {
-        console.error('Failed to save to Firestore:', firestoreError);
-        // Continue anyway - Cloudinary upload was successful
+        console.error('[IMAGE_UPLOAD] Firestore sync failed:', firestoreError);
       }
     }
     
@@ -164,9 +168,9 @@ export async function POST(req: NextRequest) {
       { headers: getRateLimitHeaders(rateLimit) }
     );
   } catch (error: any) {
-    console.error('Image upload error:', error);
+    console.error('[IMAGE_UPLOAD] Error:', error?.message || error);
     return NextResponse.json({ 
-      error: error.message || 'Failed to upload image'
+      error: 'Failed to upload image'
     }, { status: 500 });
   }
 }

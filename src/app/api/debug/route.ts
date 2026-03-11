@@ -1,151 +1,112 @@
 import { NextResponse } from 'next/server';
 import { NextRequest } from 'next/server';
-import { requireAuth, getUserEmail, isAuthenticated } from '@/lib/api-auth';
+import {
+  getAuthenticatedUser,
+  isDebugAdminEmail,
+  requireDebugAdmin,
+} from '@/lib/api-auth';
 import { getServerCloudinary } from '@/lib/cloudinary';
-
-function isDebugAdmin(email: string | null): boolean {
-  if (!email) return false;
-  const allowlist = (process.env.DEBUG_ADMIN_EMAILS || '')
-    .split(',')
-    .map(item => item.trim().toLowerCase())
-    .filter(Boolean);
-  return allowlist.includes(email.toLowerCase());
-}
 
 /**
  * Debug endpoint for diagnosing API issues
  * Only active in development mode for security reasons
  */
 export async function GET(req: NextRequest) {
-  // Development is open for local diagnosis. Non-dev requires explicit admin allowlist.
   if (process.env.NODE_ENV !== 'development') {
-    const authResponse = await requireAuth(req);
-    if (authResponse) {
-      console.warn('[DEBUG_ACCESS_DENIED]', JSON.stringify({
-        path: '/api/debug',
-        reason: 'unauthenticated',
-        env: process.env.NODE_ENV,
-        timestamp: new Date().toISOString(),
-      }));
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    }
-
-    const email = await getUserEmail(req);
-    if (!isDebugAdmin(email)) {
-      console.warn('[DEBUG_ACCESS_DENIED]', JSON.stringify({
-        path: '/api/debug',
-        reason: 'not_allowlisted',
-        hasEmail: Boolean(email),
-        env: process.env.NODE_ENV,
-        timestamp: new Date().toISOString(),
-      }));
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    const accessResponse = await requireDebugAdmin(req, '/api/debug');
+    if (accessResponse) {
+      return accessResponse;
     }
   }
   
-  const results: any = {
+  const authUser = await getAuthenticatedUser(req);
+  const hasEmail = Boolean(authUser?.email);
+
+  const results = {
     timestamp: new Date().toISOString(),
     authentication: {
-      status: false,
-      email: null,
+      authenticated: Boolean(authUser),
+      hasEmail,
+      isDebugAdmin: isDebugAdminEmail(authUser?.email),
     },
     environment: {
       cloudinary: {
-        cloudName: process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME ? 'set' : 'missing',
-        apiKey: process.env.CLOUDINARY_API_KEY ? 'set' : 'missing',
-        apiSecret: process.env.CLOUDINARY_API_SECRET ? 'set' : 'missing',
-        uploadPreset: process.env.CLOUDINARY_UPLOAD_PRESET || 'not_set',
+        cloudNameConfigured: Boolean(process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME),
+        apiKeyConfigured: Boolean(process.env.CLOUDINARY_API_KEY),
+        apiSecretConfigured: Boolean(process.env.CLOUDINARY_API_SECRET),
+        uploadPresetConfigured: Boolean(process.env.CLOUDINARY_UPLOAD_PRESET),
       },
     },
     cloudinary: {
       connected: false,
-      folders: null,
-      error: null,
+      rootFolderCount: null as number | null,
+      sampleAssetAvailable: null as boolean | null,
+      sampleAssetSummary: null as
+        | { format: string | null; width: number | null; height: number | null; bytes: number | null }
+        | null,
+      userFolder: null as { checked: boolean; exists: boolean | null; imageCount: number | null } | null,
+      error: null as string | null,
     },
     cookies: {
-      values: {},
+      present: req.cookies.getAll().length > 0,
+      count: req.cookies.getAll().length,
     },
   };
-
-  // Check authentication
-  try {
-    results.authentication.status = await isAuthenticated(req);
-    results.authentication.email = await getUserEmail(req);
-    
-    // Create folder name as done in the gallery API
-    if (results.authentication.email) {
-      results.authentication.folder = `modern-mosaics/${results.authentication.email.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    }
-  } catch (authError: any) {
-    results.authentication.error = authError.message;
-  }
   
-  // Check cookies
-  req.cookies.getAll().forEach(cookie => {
-    results.cookies.values[cookie.name] = '[REDACTED]';
-  });
-  
-  // Check Cloudinary connection
-  if (results.environment.cloudinary.cloudName === 'set' && 
-      results.environment.cloudinary.apiKey === 'set' && 
-      results.environment.cloudinary.apiSecret === 'set') {
+  if (
+    results.environment.cloudinary.cloudNameConfigured &&
+    results.environment.cloudinary.apiKeyConfigured &&
+    results.environment.cloudinary.apiSecretConfigured
+  ) {
     try {
       const cloudinary = await getServerCloudinary();
       results.cloudinary.connected = true;
-      
-      // Add image URL testing functionality
-      results.cloudinary.imageTests = {
-        sampleImage: `https://res.cloudinary.com/${process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME}/image/upload/sample`,
-        testUrls: []
-      };
-      
-      // Test URL construction with sample image
+
       try {
-        // Try to fetch sample image info to test connectivity
         const sampleResult = await cloudinary.api.resource('sample');
-        results.cloudinary.imageTests.sampleExists = true;
-        results.cloudinary.imageTests.sampleInfo = {
-          format: sampleResult.format,
-          width: sampleResult.width,
-          height: sampleResult.height,
-          bytes: sampleResult.bytes
+        results.cloudinary.sampleAssetAvailable = true;
+        results.cloudinary.sampleAssetSummary = {
+          format: typeof sampleResult.format === 'string' ? sampleResult.format : null,
+          width: typeof sampleResult.width === 'number' ? sampleResult.width : null,
+          height: typeof sampleResult.height === 'number' ? sampleResult.height : null,
+          bytes: typeof sampleResult.bytes === 'number' ? sampleResult.bytes : null,
         };
-      } catch (sampleError: any) {
-        results.cloudinary.imageTests.sampleExists = false;
-        results.cloudinary.imageTests.sampleError = sampleError.message;
+      } catch {
+        results.cloudinary.sampleAssetAvailable = false;
       }
       
       try {
-        // Try to get root folders
         const foldersResult = await cloudinary.api.root_folders();
-        results.cloudinary.folders = foldersResult.folders.map((f: any) => f.name);
-        
-        // If authenticated, try to check user folder
-        if (results.authentication.folder) {
+        results.cloudinary.rootFolderCount = Array.isArray(foldersResult.folders)
+          ? foldersResult.folders.length
+          : 0;
+
+        if (authUser?.uid) {
+          const userFolder = `modern-mosaics/${authUser.uid.replace(/[^a-zA-Z0-9]/g, '_')}`;
           try {
-            // Try to search user's folder 
             const folderSearch = await cloudinary.search
-              .expression(`folder:${results.authentication.folder}`)
+              .expression(`folder:${userFolder}`)
               .max_results(1)
               .execute();
             
             results.cloudinary.userFolder = {
+              checked: true,
               exists: true,
-              imageCount: folderSearch.total_count,
+              imageCount: typeof folderSearch.total_count === 'number' ? folderSearch.total_count : 0,
             };
-          } catch (folderError: any) {
-            // Usually means folder doesn't exist - that's normal for new users
+          } catch {
             results.cloudinary.userFolder = {
+              checked: true,
               exists: false,
-              error: folderError.message,
+              imageCount: null,
             };
           }
         }
-      } catch (folderError: any) {
-        results.cloudinary.foldersError = folderError.message;
+      } catch {
+        results.cloudinary.rootFolderCount = null;
       }
     } catch (cloudinaryError: any) {
-      results.cloudinary.error = cloudinaryError.message;
+      results.cloudinary.error = 'Cloudinary check failed';
     }
   }
   

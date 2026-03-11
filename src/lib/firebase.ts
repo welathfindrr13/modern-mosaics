@@ -21,10 +21,21 @@ import {
 } from 'firebase/firestore';
 import { GOOGLE_POPUP_TIMEOUT_MS, withAuthTimeout } from '@/lib/auth-flow';
 
+const resolveFirebaseAuthDomain = () => {
+  if (typeof window !== 'undefined') {
+    const { hostname } = window.location;
+    if (hostname && hostname !== 'localhost' && hostname !== '127.0.0.1') {
+      return hostname;
+    }
+  }
+
+  return process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN;
+};
+
 // Firebase configuration from environment variables
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  authDomain: resolveFirebaseAuthDomain(),
   projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
   storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
   messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
@@ -81,6 +92,8 @@ export type AuthFailureCode =
   | 'popup_timeout'
   | 'popup_cancelled'
   | 'redirect_started'
+  | 'unauthorized_domain'
+  | 'operation_not_supported'
   | 'invalid_credentials'
   | 'email_already_in_use'
   | 'weak_password'
@@ -111,6 +124,10 @@ function mapAuthCode(code?: string): AuthFailureCode {
       return 'popup_timeout';
     case 'auth/cancelled-popup-request':
       return 'popup_cancelled';
+    case 'auth/unauthorized-domain':
+      return 'unauthorized_domain';
+    case 'auth/operation-not-supported-in-this-environment':
+      return 'operation_not_supported';
     case 'auth/invalid-credential':
     case 'auth/invalid-email':
     case 'auth/user-not-found':

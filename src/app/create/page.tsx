@@ -5,10 +5,10 @@ import Link from 'next/link'
 import PhotoUploader from '@/components/edit/PhotoUploader'
 import { PrintConfidencePanel } from '@/components/ui/PrintConfidencePanel'
 import type { SizeKey } from '@/data/printLabCatalog'
-import {
-  getRecommendedSizeKey,
-} from '@/utils/printQuality'
+import { getRecommendedSizeKey } from '@/utils/printQuality'
 import { trackClientEvent } from '@/lib/client-telemetry'
+import { clientCookieUtils } from '@/lib/auth-cookies'
+import { getCurrentUser, signInAnonymously } from '@/lib/firebase'
 
 // =============================================================================
 // RELIABILITY: Timeout constants for generation flow
@@ -24,9 +24,26 @@ type ErrorStateDetails = {
   step?: string
   requestId?: string
   retryable?: boolean
+  upgradeRequired?: boolean
+  upgradeUrl?: string
+  signInReason?: string
 }
 
 type RequestError = Error & ErrorStateDetails
+
+async function ensureCreateSessionCookie(): Promise<void> {
+  let authUser = getCurrentUser()
+
+  if (!authUser) {
+    const result = await signInAnonymously()
+    if (!result.user) {
+      throw new Error('Unable to start guest session. Please refresh and try again.')
+    }
+    authUser = result.user
+  }
+
+  await clientCookieUtils.setAuthCookie(authUser)
+}
 
 function isTransientFailure(statusCode: number | undefined, message: string): boolean {
   if (statusCode && TRANSIENT_STATUS_CODES.has(statusCode)) return true
@@ -272,6 +289,8 @@ export default function CreatePage() {
     void trackClientEvent('create_preview_started', eventBase)
 
     try {
+      await ensureCreateSessionCookie()
+
       let finalImageUrl: string
       let finalPublicId: string
       let finalRequestId: string | undefined
@@ -320,7 +339,13 @@ export default function CreatePage() {
           requestError.statusCode = uploadResponse.status
           requestError.step = payload.step || 'upload'
           requestError.requestId = payload.requestId
-          requestError.retryable = isTransientFailure(uploadResponse.status, requestError.message)
+          requestError.retryable =
+            typeof payload.retryable === 'boolean'
+              ? payload.retryable
+              : isTransientFailure(uploadResponse.status, requestError.message)
+          requestError.upgradeRequired = payload.upgradeRequired === true
+          requestError.upgradeUrl = typeof payload.upgradeUrl === 'string' ? payload.upgradeUrl : undefined
+          requestError.signInReason = typeof payload.signInReason === 'string' ? payload.signInReason : undefined
           lastUploadError = requestError
 
           if (!requestError.retryable || attempt >= MAX_TRANSIENT_RETRIES) {
@@ -374,7 +399,13 @@ export default function CreatePage() {
           requestError.statusCode = response.status
           requestError.step = payload.step || 'openai'
           requestError.requestId = payload.requestId
-          requestError.retryable = isTransientFailure(response.status, requestError.message)
+          requestError.retryable =
+            typeof payload.retryable === 'boolean'
+              ? payload.retryable
+              : isTransientFailure(response.status, requestError.message)
+          requestError.upgradeRequired = payload.upgradeRequired === true
+          requestError.upgradeUrl = typeof payload.upgradeUrl === 'string' ? payload.upgradeUrl : undefined
+          requestError.signInReason = typeof payload.signInReason === 'string' ? payload.signInReason : undefined
           lastGenerationError = requestError
 
           if (!requestError.retryable || attempt >= MAX_TRANSIENT_RETRIES) {
@@ -432,10 +463,15 @@ export default function CreatePage() {
         const step = typeof err.step === 'string' ? err.step : undefined
         const requestId = typeof err.requestId === 'string' ? err.requestId : undefined
         const retryable = typeof err.retryable === 'boolean' ? err.retryable : isTransientFailure(statusCode, err.message || '')
-        setErrorDetails({ statusCode, step, requestId, retryable })
+        const upgradeRequired = err.upgradeRequired === true
+        const upgradeUrl = typeof err.upgradeUrl === 'string' ? err.upgradeUrl : undefined
+        const signInReason = typeof err.signInReason === 'string' ? err.signInReason : undefined
+        setErrorDetails({ statusCode, step, requestId, retryable, upgradeRequired, upgradeUrl, signInReason })
 
         const msg = err.message?.toLowerCase() || ''
-        if (createMode === 'creative') {
+        if (upgradeRequired) {
+          setError(err.message || 'Upgrade your guest session to continue.')
+        } else if (createMode === 'creative') {
           if (msg.includes('rate limit') || msg.includes('429')) {
             setError('Too many requests. Please wait a moment.')
           } else if (msg.includes('content') || msg.includes('policy') || msg.includes('filtered')) {
@@ -891,16 +927,26 @@ export default function CreatePage() {
                 </div>
               </div>
               <div className="mt-4 flex flex-wrap gap-2">
-                <button
-                  onClick={() => {
-                    setError(null)
-                    handleSubmit({ preventDefault: () => {} } as React.FormEvent)
-                  }}
-                  className="btn-secondary text-sm"
-                  disabled={loading}
-                >
-                  Try Again
-                </button>
+                {errorDetails?.retryable !== false && (
+                  <button
+                    onClick={() => {
+                      setError(null)
+                      handleSubmit({ preventDefault: () => {} } as React.FormEvent)
+                    }}
+                    className="btn-secondary text-sm"
+                    disabled={loading}
+                  >
+                    Try Again
+                  </button>
+                )}
+                {errorDetails?.upgradeRequired && (
+                  <Link
+                    href={errorDetails.upgradeUrl || '/signin?reason=upgrade'}
+                    className="px-3 py-2 rounded-lg border border-brand-400/30 text-brand-300 text-sm hover:text-brand-200 hover:border-brand-300 transition-colors"
+                  >
+                    Upgrade account
+                  </Link>
+                )}
                 {createMode === 'creative' && (
                   <>
                     <button

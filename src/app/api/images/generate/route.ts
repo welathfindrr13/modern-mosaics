@@ -3,7 +3,18 @@ import { NextRequest } from 'next/server';
 import { generateImage } from '../../../../lib/openai';
 import { requireAuth, getAuthenticatedUser } from '@/lib/api-auth';
 import crypto from 'crypto';
-import { checkRateLimit, getRateLimitHeaders } from '@/lib/rate-limit';
+import {
+  buildRateLimitKey,
+  checkRateLimit,
+  createRateLimitResponse,
+  enforceContentLengthLimit,
+  getRateLimitHeaders,
+  resolveRateLimitPolicy,
+} from '@/lib/rate-limit';
+import {
+  generateImageRequestSchema,
+  parseJsonWithSchema,
+} from '@/schemas/api';
 
 // =============================================================================
 // RELIABILITY: Timeout protection for legacy generate route
@@ -33,6 +44,10 @@ function withTimeout<T>(promise: Promise<T>, ms: number, operation: string): Pro
 export async function POST(req: NextRequest) {
   const requestId = generateRequestId();
   const requestStart = Date.now();
+  const payloadTooLarge = enforceContentLengthLimit(req, 16 * 1024);
+  if (payloadTooLarge) {
+    return payloadTooLarge;
+  }
   
   console.log(`[Generate] [${requestId}] API called`);
   
@@ -49,28 +64,37 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized', requestId }, { status: 401 });
     }
 
-    const rateLimit = checkRateLimit(`images:generate:${user.uid}`, 10, 60_000);
+    const rateLimitPolicy = resolveRateLimitPolicy('imagesGenerate', user);
+    const rateLimit = await checkRateLimit(
+      buildRateLimitKey('images:generate', req, user.uid),
+      rateLimitPolicy.limit,
+      rateLimitPolicy.windowMs
+    );
     if (!rateLimit.allowed) {
-      return NextResponse.json(
-        { error: 'Too many image generation requests. Please wait and try again.', requestId },
-        { status: 429, headers: getRateLimitHeaders(rateLimit) }
+      return createRateLimitResponse(
+        rateLimitPolicy.message,
+        rateLimit,
+        {
+          requestId,
+          ...rateLimitPolicy.body,
+        }
       );
     }
 
     const authDuration = Date.now() - authStart;
     console.log(`[Generate] [${requestId}] Auth complete: ${authDuration}ms`);
 
-    // Get parameters from request body
-    const { prompt } = await req.json();
-    const promptLength = prompt?.length || 0;
-    
-    if (!prompt) {
-      console.log(`[Generate] [${requestId}] Error: No prompt provided`);
+    const parsedBody = await parseJsonWithSchema(req, generateImageRequestSchema);
+    if (!parsedBody.success) {
+      const errorBody = await parsedBody.response.json();
       return NextResponse.json(
-        { error: 'Prompt is required', requestId },
+        { ...errorBody, requestId },
         { status: 400 }
       );
     }
+
+    const { prompt } = parsedBody.data;
+    const promptLength = prompt?.length || 0;
     console.log(`[Generate] [${requestId}] promptLength: ${promptLength}`);
 
     // RELIABILITY: Generate with timeout protection

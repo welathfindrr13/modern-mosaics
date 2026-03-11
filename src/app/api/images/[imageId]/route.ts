@@ -2,6 +2,10 @@ import { NextResponse } from 'next/server';
 import { NextRequest } from 'next/server';
 import { requireAuth, getAuthenticatedUser } from '@/lib/api-auth';
 import { adminImageOperations, adminOrderOperations } from '@/utils/firestore-admin';
+import {
+  imageRouteParamsSchema,
+  parseRouteParamsWithSchema,
+} from '@/schemas/api';
 
 /**
  * DELETE /api/images/[imageId]
@@ -19,14 +23,11 @@ export async function DELETE(
   { params }: { params: { imageId: string } }
 ) {
   try {
-    const { imageId } = params;
-    
-    if (!imageId) {
-      return NextResponse.json(
-        { error: 'MISSING_IMAGE_ID', message: 'Image ID is required' },
-        { status: 400 }
-      );
+    const parsedParams = parseRouteParamsWithSchema(params, imageRouteParamsSchema);
+    if (!parsedParams.success) {
+      return parsedParams.response;
     }
+    const { imageId } = parsedParams.data;
 
     // Verify user is authenticated
     const authError = await requireAuth(req);
@@ -44,7 +45,7 @@ export async function DELETE(
     }
     
     const userId = user.uid;
-    console.log(`[Delete Image] User ${userId} attempting to delete image ${imageId}`);
+    console.log('[IMAGE_DELETE] Delete requested');
 
     // Load the image document to get cloudinaryPublicId
     const image = await adminImageOperations.getById(userId, imageId);
@@ -57,14 +58,13 @@ export async function DELETE(
     }
 
     const cloudinaryPublicId = image.cloudinaryPublicId;
-    console.log(`[Delete Image] Found image with cloudinaryPublicId: ${cloudinaryPublicId}`);
 
     // Check if this image is referenced by any order
     const orders = await adminOrderOperations.getByUserId(userId);
     const referencingOrder = orders.find(order => order.imageId === cloudinaryPublicId);
 
     if (referencingOrder) {
-      console.log(`[Delete Image] Image is referenced by order ${referencingOrder.id}, blocking deletion`);
+      console.log('[IMAGE_DELETE] Blocked because image is referenced by an order');
       return NextResponse.json(
         { 
           error: 'IMAGE_IN_USE', 
@@ -77,12 +77,12 @@ export async function DELETE(
 
     // Safe to delete - remove from Firestore only (NOT Cloudinary)
     await adminImageOperations.delete(userId, imageId);
-    console.log(`[Delete Image] Successfully deleted image ${imageId} from gallery`);
+    console.log('[IMAGE_DELETE] Completed successfully');
 
     return NextResponse.json({ ok: true });
 
   } catch (error: any) {
-    console.error('[Delete Image] Error:', error);
+    console.error('[IMAGE_DELETE] Error:', error?.message || error);
     return NextResponse.json(
       { 
         error: 'DELETE_FAILED', 

@@ -1,14 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/api-auth';
 import { getGelatoClient, GelatoOrderRequest, GelatoOrderFile, mapAddressToGelato, validateGelatoAddress } from '@/lib/gelato';
-import { OrderCreateRequest, OrderCreateResponse, OrderStatus, CropParams } from '@/models/order';
+import { OrderCreateResponse, OrderStatus } from '@/models/order';
 import { printUrl, makeCloudinaryPrintUrlFromSizeKey, CropParams as PrintCropParams } from '@/utils/cloudinaryPrint';
 import { PRINT_SIZES } from '@/utils/printSizes';
 import type { SizeKey } from '@/data/printLabCatalog';
 // Note: Pricing is handled at checkout session creation, not here
 // This route only handles Gelato order submission
 import { getServerCloudinary } from '@/lib/cloudinary';
-import { checkRateLimit, getRateLimitHeaders } from '@/lib/rate-limit';
+import {
+  buildRateLimitKey,
+  checkRateLimit,
+  createRateLimitResponse,
+  getRateLimitHeaders,
+  resolveRateLimitPolicy,
+} from '@/lib/rate-limit';
+import {
+  ordersCreateRequestSchema,
+  parseJsonWithSchema,
+} from '@/schemas/api';
 
 function logDirectOrderAudit(params: {
   uid: string | null;
@@ -155,7 +165,12 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const rateLimit = checkRateLimit(`orders:create:${authUser.uid}`, 3, 60_000);
+    const rateLimitPolicy = resolveRateLimitPolicy('ordersCreate', authUser);
+    const rateLimit = await checkRateLimit(
+      buildRateLimitKey('orders:create', request, authUser.uid),
+      rateLimitPolicy.limit,
+      rateLimitPolicy.windowMs
+    );
     if (!rateLimit.allowed) {
       logDirectOrderAudit({
         uid: authUser.uid,
@@ -163,26 +178,19 @@ export async function POST(request: NextRequest) {
         statusCode: 429,
         reason: 'rate_limited',
       });
-      return NextResponse.json(
-        { error: 'Too many direct order attempts. Please wait and try again.', code: 'RATE_LIMITED' },
-        { status: 429, headers: getRateLimitHeaders(rateLimit) }
+      return createRateLimitResponse(
+        rateLimitPolicy.message,
+        rateLimit,
+        rateLimitPolicy.body
       );
     }
 
-    // Parse request body
-    const orderData: OrderCreateRequest = await request.json();
-    
-    // Validate required fields
-    if (!orderData.productUid || 
-        !orderData.imagePublicId || 
-        !orderData.shippingAddress || 
-        !orderData.shippingMethodUid ||
-        !orderData.size) {
-      return NextResponse.json(
-        { error: 'Missing required order information', code: 'INVALID_INPUT' }, 
-        { status: 400 }
-      );
+    const parsedBody = await parseJsonWithSchema(request, ordersCreateRequestSchema);
+    if (!parsedBody.success) {
+      return parsedBody.response;
     }
+
+    const orderData = parsedBody.data;
     
     // RELIABILITY: Validate address has all required fields before sending to Gelato
     const addressValidationError = validateGelatoAddress(orderData.shippingAddress);

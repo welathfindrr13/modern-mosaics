@@ -6,7 +6,13 @@ import {
   type CurrencyCode,
 } from '@/utils/priceUtils';
 import { getCurrencyForCountry } from '@/utils/currency';
-import { validateCurrency, isSupportedCurrency, getFxSnapshot } from '@/utils/fx';
+import { validateCurrency, getFxSnapshot } from '@/utils/fx';
+import {
+  parseJsonWithSchema,
+  parseSearchParamsWithSchema,
+  pricingPreviewBatchRequestSchema,
+  pricingPreviewQuerySchema,
+} from '@/schemas/api';
 
 /**
  * GET /api/pricing/preview
@@ -31,23 +37,20 @@ import { validateCurrency, isSupportedCurrency, getFxSnapshot } from '@/utils/fx
  */
 export async function GET(request: NextRequest) {
   try {
-    const searchParams = request.nextUrl.searchParams;
-    
-    // Get required parameters
-    const productUid = searchParams.get('productUid');
-    const country = searchParams.get('country');
-    
-    // Optional overrides
-    const productTypeOverride = searchParams.get('productType');
-    const sizeKeyOverride = searchParams.get('sizeKey');
-    
-    // Validate required params
-    if (!country) {
-      return NextResponse.json(
-        { error: 'Missing required parameter: country' },
-        { status: 400 }
-      );
+    const parsedQuery = parseSearchParamsWithSchema(
+      request.nextUrl.searchParams,
+      pricingPreviewQuerySchema
+    );
+    if (!parsedQuery.success) {
+      return parsedQuery.response;
     }
+
+    const {
+      country,
+      productUid,
+      productType: productTypeOverride,
+      sizeKey: sizeKeyOverride,
+    } = parsedQuery.data;
     
     // Derive currency from country
     const countryCode = country.toUpperCase();
@@ -62,8 +65,8 @@ export async function GET(request: NextRequest) {
     }
     
     // Determine product type and size
-    let productType: string | null = productTypeOverride;
-    let sizeKey: string | null = sizeKeyOverride;
+    let productType: string | null = productTypeOverride ?? null;
+    let sizeKey: string | null = sizeKeyOverride ?? null;
     
     if (productUid) {
       if (!productType) {
@@ -107,10 +110,10 @@ export async function GET(request: NextRequest) {
       sizeKey,
     });
     
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[PRICING/PREVIEW] Error:', error);
     return NextResponse.json(
-      { error: `Failed to get pricing: ${error.message}` },
+      { error: 'Failed to get pricing.' },
       { status: 500 }
     );
   }
@@ -130,15 +133,12 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { country, items } = body;
-    
-    if (!country || !items || !Array.isArray(items)) {
-      return NextResponse.json(
-        { error: 'Missing required fields: country and items array' },
-        { status: 400 }
-      );
+    const parsedBody = await parseJsonWithSchema(request, pricingPreviewBatchRequestSchema);
+    if (!parsedBody.success) {
+      return parsedBody.response;
     }
+
+    const { country, items } = parsedBody.data;
     
     // Derive currency from country
     const countryCode = country.toUpperCase();
@@ -184,10 +184,10 @@ export async function POST(request: NextRequest) {
       prices,
     });
     
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[PRICING/PREVIEW] Batch error:', error);
     return NextResponse.json(
-      { error: `Failed to get pricing: ${error.message}` },
+      { error: 'Failed to get pricing.' },
       { status: 500 }
     );
   }

@@ -18,6 +18,9 @@ This runbook targets a production deploy on DigitalOcean App Platform using a si
 - Firebase client config env vars (`NEXT_PUBLIC_FIREBASE_*`).
 - Firebase Admin service account JSON in `FIREBASE_SERVICE_ACCOUNT_KEY`.
 - Cloudinary, Gelato, OpenAI keys present.
+- Remote Redis provisioned for distributed rate limiting.
+- `REDIS_URL` configured in the DigitalOcean app as a secret.
+- `RATE_LIMIT_STORE=redis` configured in the DigitalOcean app runtime.
 - `ENABLE_DIRECT_ORDER_CREATE=false` in all deployed environments.
 
 ## 3. App Configuration (Recommended)
@@ -26,8 +29,17 @@ This runbook targets a production deploy on DigitalOcean App Platform using a si
 - Build command: `npm ci && npm run build`
 - Run command: `npm run start`
 - HTTP port: `3000`
+- Rate limiting: production must use remote Redis, not in-memory process state.
 - Auto deploy from main branch only after staging validation.
 - Enable zero-downtime deploys if available.
+
+## 3.1 Rate Limiting Infrastructure
+
+- Provision a managed Redis instance reachable from the web service.
+- Set `REDIS_URL` to the Redis connection string in App Platform secrets.
+- Set `RATE_LIMIT_STORE=redis`.
+- Optionally set `RATE_LIMIT_KEY_PREFIX` if multiple apps share one Redis instance.
+- Do not rely on in-memory rate limiting in production; it resets on restart and does not scale across instances.
 
 ## 4. Stripe Production Hardening
 

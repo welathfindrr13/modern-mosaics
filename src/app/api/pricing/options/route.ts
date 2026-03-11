@@ -4,13 +4,16 @@ import {
   type CurrencyCode,
 } from '@/utils/priceUtils';
 import { getCurrencyForCountry } from '@/utils/currency';
-import { validateCurrency, getFxSnapshot } from '@/utils/fx';
+import { validateCurrency } from '@/utils/fx';
 import {
-  PRINT_LAB_CATALOG,
   getAvailableSizes,
   type ProductType,
   type SizeKey,
 } from '@/data/printLabCatalog';
+import {
+  parseSearchParamsWithSchema,
+  pricingOptionsQuerySchema,
+} from '@/schemas/api';
 
 /**
  * Converted price option for a single size
@@ -46,33 +49,22 @@ interface PriceOption {
  */
 export async function GET(request: NextRequest) {
   try {
-    const searchParams = request.nextUrl.searchParams;
-    
-    const productType = searchParams.get('productType') as ProductType | null;
-    const country = searchParams.get('country');
-    
-    // Validate required params
-    if (!productType) {
+    const parsedQuery = parseSearchParamsWithSchema(
+      request.nextUrl.searchParams,
+      pricingOptionsQuerySchema
+    );
+    if (!parsedQuery.success) {
+      return parsedQuery.response;
+    }
+
+    const { productType, country } = parsedQuery.data;
+    if (productType !== 'poster' && productType !== 'canvas') {
       return NextResponse.json(
-        { error: 'Missing required parameter: productType' },
+        { error: `Unsupported productType: ${productType}` },
         { status: 400 }
       );
     }
-    
-    if (!country) {
-      return NextResponse.json(
-        { error: 'Missing required parameter: country' },
-        { status: 400 }
-      );
-    }
-    
-    // Validate product type
-    if (!PRINT_LAB_CATALOG[productType]) {
-      return NextResponse.json(
-        { error: `Invalid productType: ${productType}` },
-        { status: 400 }
-      );
-    }
+    const supportedProductType: ProductType = productType;
     
     // Derive currency from country (server-side authority)
     const countryCode = country.toUpperCase();
@@ -87,7 +79,7 @@ export async function GET(request: NextRequest) {
     }
     
     // Get available sizes for this product type (only those with valid SKUs)
-    const availableSizes = getAvailableSizes(productType);
+    const availableSizes = getAvailableSizes(supportedProductType);
     
     if (availableSizes.length === 0) {
       return NextResponse.json(
@@ -144,11 +136,11 @@ export async function GET(request: NextRequest) {
       country: countryCode,
       options,
     });
-    
-  } catch (error: any) {
+
+  } catch (error: unknown) {
     console.error('[PRICING/OPTIONS] Error:', error);
     return NextResponse.json(
-      { error: `Failed to get pricing options: ${error.message}` },
+      { error: 'Failed to get pricing options.' },
       { status: 500 }
     );
   }

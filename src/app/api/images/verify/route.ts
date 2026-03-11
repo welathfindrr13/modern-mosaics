@@ -2,7 +2,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, getAuthenticatedUser } from '@/lib/api-auth';
 import { getServerCloudinary } from '@/lib/cloudinary';
 import { ensurePublicId } from '@/utils/gelatoUrls';
-import { checkRateLimit, getRateLimitHeaders } from '@/lib/rate-limit';
+import {
+  buildRateLimitKey,
+  checkRateLimit,
+  createRateLimitResponse,
+  getRateLimitHeaders,
+  resolveRateLimitPolicy,
+} from '@/lib/rate-limit';
+import {
+  cloudinaryPublicIdSchema,
+  getValidationMessage,
+  imageVerifyRequestSchema,
+} from '@/schemas/api';
 
 /**
  * Verify that an image exists in Cloudinary and return minimal metadata.
@@ -19,23 +30,50 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ exists: false, error: 'Unauthorized', code: 'UNAUTHORIZED' }, { status: 401 });
     }
 
-    const rateLimit = checkRateLimit(`images:verify:${user.uid}`, 30, 60_000);
+    const rateLimitPolicy = resolveRateLimitPolicy('imagesVerify', user);
+    const rateLimit = await checkRateLimit(
+      buildRateLimitKey('images:verify', request, user.uid),
+      rateLimitPolicy.limit,
+      rateLimitPolicy.windowMs
+    );
     if (!rateLimit.allowed) {
-      return NextResponse.json(
-        { exists: false, error: 'Too many verification requests. Please wait and try again.', code: 'RATE_LIMITED' },
-        { status: 429, headers: getRateLimitHeaders(rateLimit) }
+      return createRateLimitResponse(
+        rateLimitPolicy.message,
+        rateLimit,
+        {
+          exists: false,
+          ...rateLimitPolicy.body,
+        }
       );
     }
 
-    const { imageIdentifier } = await request.json();
-    if (!imageIdentifier) {
+    let rawBody: unknown;
+    try {
+      rawBody = await request.json();
+    } catch {
       return NextResponse.json(
-        { exists: false, error: 'Image identifier is required', code: 'INVALID_INPUT' },
+        { exists: false, error: 'Invalid JSON body', code: 'INVALID_INPUT' },
         { status: 400, headers: getRateLimitHeaders(rateLimit) }
       );
     }
 
-    const publicId = ensurePublicId(imageIdentifier);
+    const parsedBody = imageVerifyRequestSchema.safeParse(rawBody);
+    if (!parsedBody.success) {
+      return NextResponse.json(
+        { exists: false, error: getValidationMessage(parsedBody.error), code: 'INVALID_INPUT' },
+        { status: 400, headers: getRateLimitHeaders(rateLimit) }
+      );
+    }
+    const { imageIdentifier } = parsedBody.data;
+
+    const publicIdResult = cloudinaryPublicIdSchema.safeParse(ensurePublicId(imageIdentifier));
+    if (!publicIdResult.success) {
+      return NextResponse.json(
+        { exists: false, error: getValidationMessage(publicIdResult.error), code: 'INVALID_INPUT' },
+        { status: 400, headers: getRateLimitHeaders(rateLimit) }
+      );
+    }
+    const publicId = publicIdResult.data;
     const cloudinary = await getServerCloudinary();
 
     const trySearch = async () => {
@@ -108,4 +146,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-

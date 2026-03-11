@@ -4,7 +4,15 @@ import { generateImage } from '../../../../lib/openai';
 import { requireAuth, getAuthenticatedUser } from '@/lib/api-auth';
 import sharp from 'sharp';
 import crypto from 'crypto';
-import { checkRateLimit, getRateLimitHeaders } from '@/lib/rate-limit';
+import {
+  buildRateLimitKey,
+  checkRateLimit,
+  createPayloadTooLargeResponse,
+  createRateLimitResponse,
+  enforceContentLengthLimit,
+  getRateLimitHeaders,
+  resolveRateLimitPolicy,
+} from '@/lib/rate-limit';
 
 // =============================================================================
 // RELIABILITY: Timeout protection for edit route
@@ -14,6 +22,10 @@ import { checkRateLimit, getRateLimitHeaders } from '@/lib/rate-limit';
 // =============================================================================
 const OPENAI_TIMEOUT_MS = 65_000; // 65s timeout for single edit
 const OPENAI_MULTI_TIMEOUT_MS = 90_000; // 90s for multiple variants (3 parallel calls)
+const MAX_MULTIPART_BYTES = 10 * 1024 * 1024;
+const MAX_IMAGE_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_MASK_FILE_BYTES = 4 * 1024 * 1024;
+const MAX_PROMPT_LENGTH = 2_000;
 
 function generateRequestId(): string {
   return crypto.randomBytes(8).toString('hex');
@@ -35,6 +47,10 @@ function withTimeout<T>(promise: Promise<T>, ms: number, operation: string): Pro
 export async function POST(req: NextRequest) {
   const requestId = generateRequestId();
   const requestStart = Date.now();
+  const payloadTooLarge = enforceContentLengthLimit(req, MAX_MULTIPART_BYTES);
+  if (payloadTooLarge) {
+    return payloadTooLarge;
+  }
   
   console.log(`[Edit] [${requestId}] API called`);
   
@@ -51,11 +67,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized', requestId }, { status: 401 });
     }
 
-    const rateLimit = checkRateLimit(`images:edit:${user.uid}`, 8, 60_000);
+    const rateLimitPolicy = resolveRateLimitPolicy('imagesEdit', user);
+    const rateLimit = await checkRateLimit(
+      buildRateLimitKey('images:edit', req, user.uid),
+      rateLimitPolicy.limit,
+      rateLimitPolicy.windowMs
+    );
     if (!rateLimit.allowed) {
-      return NextResponse.json(
-        { error: 'Too many image edit requests. Please wait and try again.', requestId },
-        { status: 429, headers: getRateLimitHeaders(rateLimit) }
+      return createRateLimitResponse(
+        rateLimitPolicy.message,
+        rateLimit,
+        {
+          requestId,
+          ...rateLimitPolicy.body,
+        }
       );
     }
 
@@ -79,6 +104,13 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+
+    if (prompt.length > MAX_PROMPT_LENGTH) {
+      return NextResponse.json(
+        { error: 'Prompt must be 2000 characters or fewer', requestId },
+        { status: 400 }
+      );
+    }
     
     if (!image) {
       console.log(`[Edit] [${requestId}] Error: No image provided`);
@@ -86,6 +118,44 @@ export async function POST(req: NextRequest) {
         { error: 'Image is required for editing', requestId },
         { status: 400 }
       );
+    }
+
+    if (!(image instanceof File) || image.size <= 0) {
+      return NextResponse.json(
+        { error: 'Image file is invalid', requestId },
+        { status: 400 }
+      );
+    }
+
+    if (!image.type.startsWith('image/')) {
+      return NextResponse.json(
+        { error: 'Image must be an image file', requestId },
+        { status: 400 }
+      );
+    }
+
+    if (image.size > MAX_IMAGE_FILE_BYTES) {
+      return createPayloadTooLargeResponse(MAX_IMAGE_FILE_BYTES);
+    }
+
+    if (mask) {
+      if (!(mask instanceof File) || mask.size <= 0) {
+        return NextResponse.json(
+          { error: 'Mask file is invalid', requestId },
+          { status: 400 }
+        );
+      }
+
+      if (!mask.type.startsWith('image/')) {
+        return NextResponse.json(
+          { error: 'Mask must be an image file', requestId },
+          { status: 400 }
+        );
+      }
+
+      if (mask.size > MAX_MASK_FILE_BYTES) {
+        return createPayloadTooLargeResponse(MAX_MASK_FILE_BYTES);
+      }
     }
     
     // OBSERVABILITY: Log metadata, not content

@@ -19,7 +19,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth, getUserEmail } from '@/lib/api-auth';
+import { requireDebugAdmin } from '@/lib/api-auth';
 import { getGelatoClient, GelatoQuoteRequest, GelatoRecipient } from '@/lib/gelato';
 
 // =============================================================================
@@ -172,15 +172,6 @@ interface TestResponse {
   };
 }
 
-function isDebugAdmin(email: string | null): boolean {
-  if (!email) return false;
-  const allowlist = (process.env.DEBUG_ADMIN_EMAILS || '')
-    .split(',')
-    .map(item => item.trim().toLowerCase())
-    .filter(Boolean);
-  return allowlist.includes(email.toLowerCase());
-}
-
 // =============================================================================
 // QUOTE TESTING FUNCTION
 // =============================================================================
@@ -282,29 +273,10 @@ async function testQuoteForCountry(
 // =============================================================================
 
 export async function GET(request: NextRequest) {
-  // Development is open for local diagnosis. Non-dev requires explicit admin allowlist.
   if (process.env.NODE_ENV !== 'development') {
-    const authResponse = await requireAuth(request);
-    if (authResponse) {
-      console.warn('[DEBUG_ACCESS_DENIED]', JSON.stringify({
-        path: '/api/debug/gelato/country-support',
-        reason: 'unauthenticated',
-        env: process.env.NODE_ENV,
-        timestamp: new Date().toISOString(),
-      }));
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    }
-
-    const email = await getUserEmail(request);
-    if (!isDebugAdmin(email)) {
-      console.warn('[DEBUG_ACCESS_DENIED]', JSON.stringify({
-        path: '/api/debug/gelato/country-support',
-        reason: 'not_allowlisted',
-        hasEmail: Boolean(email),
-        env: process.env.NODE_ENV,
-        timestamp: new Date().toISOString(),
-      }));
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    const accessResponse = await requireDebugAdmin(request, '/api/debug/gelato/country-support');
+    if (accessResponse) {
+      return accessResponse;
     }
   }
 

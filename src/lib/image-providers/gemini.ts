@@ -57,7 +57,7 @@ async function tryGenerateWithModel(
   prompt: string
 ): Promise<{ success: boolean; data?: any; error?: string }> {
   try {
-    console.log(`[Gemini] Trying model: ${modelName}`);
+    console.log('[Gemini] Trying model', { modelName });
     
     const response = await client.models.generateContent({
       model: modelName,
@@ -86,7 +86,7 @@ async function tryGenerateWithModel(
 
     return { success: false, error: 'No image data in response - model may not support image generation' };
   } catch (error: any) {
-    console.log(`[Gemini] Model ${modelName} failed:`, error.message);
+    console.log('[Gemini] Model failed', { modelName, message: error.message });
     return { success: false, error: error.message };
   }
 }
@@ -104,7 +104,7 @@ export async function generateWithGemini(
     throw new Error('Prompt is required');
   }
 
-  console.log(`[Gemini] Generating image with prompt: ${prompt.substring(0, 100)}...`);
+  console.log('[Gemini] Generating image', { promptLength: prompt.length, aspectRatio: aspectRatio || '1:1' });
 
   const client = getGeminiClient();
   let lastError = '';
@@ -114,7 +114,7 @@ export async function generateWithGemini(
     const result = await tryGenerateWithModel(client, modelName, prompt);
     
     if (result.success && result.data) {
-      console.log(`[Gemini] Success with model: ${modelName}`);
+      console.log('[Gemini] Generation successful', { modelName });
       const dimensions = estimateDimensions(aspectRatio);
       
       return {
@@ -130,7 +130,7 @@ export async function generateWithGemini(
   }
 
   // If all models failed, throw a helpful error
-  console.error('[Gemini] All models failed. Last error:', lastError);
+  console.error('[Gemini] All models failed', { promptLength: prompt.length, lastError });
 
   if (lastError.includes('SAFETY') || lastError.includes('blocked')) {
     throw new Error(
@@ -161,14 +161,14 @@ export async function generateMultipleWithGemini(
   request: Omit<GenerateImageRequest, 'provider'>,
   count: number
 ): Promise<GeneratedImage[]> {
-  console.log(`[Gemini] Generating ${count} images in parallel`);
+  console.log('[Gemini] Generating images in parallel', { count, promptLength: request.prompt.length });
 
   const promises = Array.from({ length: count }, () =>
     generateWithGemini(request)
   );
 
   const results = await Promise.all(promises);
-  console.log(`[Gemini] Successfully generated ${results.length} images`);
+  console.log('[Gemini] Parallel generation complete', { count: results.length });
 
   return results;
 }

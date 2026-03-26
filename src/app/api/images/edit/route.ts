@@ -87,8 +87,24 @@ export async function POST(req: NextRequest) {
     const authDuration = Date.now() - authStart;
     console.log(`[Edit] [${requestId}] Auth complete: ${authDuration}ms`);
 
+    const contentType = req.headers.get('content-type')?.toLowerCase() ?? '';
+    if (!contentType.includes('multipart/form-data')) {
+      return NextResponse.json(
+        { error: 'Request must use multipart/form-data', requestId },
+        { status: 415, headers: getRateLimitHeaders(rateLimit) }
+      );
+    }
+
     // Get parameters from multipart form data
-    const formData = await req.formData();
+    let formData: FormData;
+    try {
+      formData = await req.formData();
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid multipart form data', requestId },
+        { status: 400, headers: getRateLimitHeaders(rateLimit) }
+      );
+    }
     
     const prompt = formData.get('prompt') as string;
     const image = formData.get('image') as File;

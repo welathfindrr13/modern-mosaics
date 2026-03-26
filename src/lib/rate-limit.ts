@@ -394,7 +394,11 @@ export function buildRateLimitKey(
   request: Pick<NextRequest, 'headers'>,
   uid?: string | null
 ): string {
-  return `${route}:${uid ?? 'anon'}:${getClientIpHash(request)}`;
+  if (uid) {
+    return `${route}:uid:${uid}`;
+  }
+
+  return `${route}:ip:${getClientIpHash(request)}`;
 }
 
 export function createRateLimitResponse(

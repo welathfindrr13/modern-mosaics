@@ -57,27 +57,31 @@ export default function EditPage() {
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
+  const [photoObjectUrl, setPhotoObjectUrl] = useState<string | null>(null);
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  // Helper functions
-  const fileToDataUrl = (file: File): Promise<string> => {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.readAsDataURL(file);
-    });
-  };
+  useEffect(() => {
+    if (!photo) {
+      setPhotoObjectUrl(null);
+      return;
+    }
 
-  const blobToDataUrl = (blob: Blob): Promise<string> => {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.readAsDataURL(blob);
-    });
-  };
+    const objectUrl = URL.createObjectURL(photo);
+    setPhotoObjectUrl(objectUrl);
+
+    return () => {
+      URL.revokeObjectURL(objectUrl);
+    };
+  }, [photo]);
+
+  useEffect(() => {
+    if (!authLoading && mounted && (!user || user.isAnonymous)) {
+      router.replace('/signin');
+    }
+  }, [authLoading, mounted, router, user]);
 
   const generatePreviews = async (editPrompt: string) => {
     if (!photo || !maskBlob) return;
@@ -86,9 +90,6 @@ export default function EditPage() {
     setError(null);
     
     try {
-      const imageDataUrl = await fileToDataUrl(photo);
-      const maskDataUrl = await blobToDataUrl(maskBlob);
-      
       // Create FormData for multipart upload
       const formData = new FormData();
       formData.append('image', photo);
@@ -180,8 +181,15 @@ export default function EditPage() {
   }
 
   if (!user || user.isAnonymous) {
-    router.push('/signin');
-    return null;
+    return (
+      <div className="min-h-screen bg-dark-900 pt-24 pb-12">
+        <div className="fixed inset-0 bg-glow-gradient opacity-20 pointer-events-none" />
+        <div className="relative max-w-3xl mx-auto px-4 text-center py-24">
+          <div className="w-10 h-10 border-2 border-brand-500/30 border-t-brand-500 rounded-full animate-spin mx-auto" />
+          <p className="mt-4 text-dark-300">Redirecting to sign in...</p>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -252,10 +260,12 @@ export default function EditPage() {
               </p>
             </div>
             
-            <MaskEditor 
-              src={URL.createObjectURL(photo)} 
-              onDone={(blob) => setMaskBlob(blob)}
-            />
+            {photoObjectUrl ? (
+              <MaskEditor 
+                src={photoObjectUrl}
+                onDone={(blob) => setMaskBlob(blob)}
+              />
+            ) : null}
             
             <div className="space-y-4">
               <div>

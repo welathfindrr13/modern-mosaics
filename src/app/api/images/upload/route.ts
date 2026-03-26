@@ -22,6 +22,10 @@ import {
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 
+function isOwnedCloudinaryPublicId(userFolder: string, publicId: string): boolean {
+  return publicId.startsWith(`modern-mosaics/${userFolder}/`);
+}
+
 export async function POST(req: NextRequest) {
   try {
     const payloadTooLarge = enforceContentLengthLimit(req, MAX_UPLOAD_BYTES);
@@ -74,6 +78,13 @@ export async function POST(req: NextRequest) {
 
     let folder;
     const userFolder = user.uid.replace(/[^a-zA-Z0-9]/g, '_');
+
+    if (cloudinaryPublicId && !isOwnedCloudinaryPublicId(userFolder, cloudinaryPublicId)) {
+      return NextResponse.json(
+        { error: 'You can only reuse images from your own library.' },
+        { status: 403, headers: getRateLimitHeaders(rateLimit) }
+      );
+    }
     
     if (save) {
       // For saving to gallery, use the user's folder

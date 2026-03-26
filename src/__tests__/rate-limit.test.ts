@@ -57,15 +57,27 @@ describe('rate limit helpers', () => {
     vi.useRealTimers();
   });
 
-  it('keys guest and signed-in users separately for the same route and IP', () => {
-    const request = createRequestWithIp('203.0.113.8');
+  it('keys signed-in users by stable uid regardless of client IP', () => {
+    const requestA = createRequestWithIp('203.0.113.8');
+    const requestB = createRequestWithIp('198.51.100.10');
 
-    const guestKey = buildRateLimitKey('images:generate', request as never, 'guest-uid');
-    const signedInKey = buildRateLimitKey('images:generate', request as never, 'user-uid');
-    const anonKey = buildRateLimitKey('images:generate', request as never);
+    const firstKey = buildRateLimitKey('images:generate', requestA as never, 'user-uid');
+    const secondKey = buildRateLimitKey('images:generate', requestB as never, 'user-uid');
 
-    expect(guestKey).not.toBe(signedInKey);
-    expect(anonKey).toContain(':anon:');
+    expect(firstKey).toBe('images:generate:uid:user-uid');
+    expect(secondKey).toBe(firstKey);
+  });
+
+  it('falls back to IP hashing only when no uid is available', () => {
+    const requestA = createRequestWithIp('203.0.113.8');
+    const requestB = createRequestWithIp('198.51.100.10');
+
+    const firstKey = buildRateLimitKey('images:generate', requestA as never);
+    const secondKey = buildRateLimitKey('images:generate', requestB as never);
+
+    expect(firstKey).toContain('images:generate:ip:');
+    expect(secondKey).toContain('images:generate:ip:');
+    expect(firstKey).not.toBe(secondKey);
   });
 
   it('returns the guest upgrade response contract', () => {

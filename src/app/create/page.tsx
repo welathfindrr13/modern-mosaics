@@ -164,6 +164,7 @@ export default function CreatePage() {
   const abortControllerRef = useRef<AbortController | null>(null)
   const timerRef = useRef<NodeJS.Timeout | null>(null)
   const previewRef = useRef<HTMLDivElement>(null)
+  const createFormRef = useRef<HTMLFormElement | null>(null)
   
   // PHOTO PRINTS MODE: Upload state
   const [uploadedImage, setUploadedImage] = useState<File | null>(null)
@@ -526,8 +527,7 @@ export default function CreatePage() {
     setPrompt(newPrompt)
     
     setTimeout(() => {
-      const form = document.querySelector('form')
-      if (form) form.requestSubmit()
+      createFormRef.current?.requestSubmit()
     }, 0)
   }
 
@@ -855,7 +855,7 @@ export default function CreatePage() {
               - After preview: "Choose size & order" (shown in preview section below)
               ============================================================== */}
           {!imageUrl && (
-            <form onSubmit={handleSubmit} className="space-y-6">
+            <form ref={createFormRef} onSubmit={handleSubmit} className="space-y-6">
               <div>
                 <button 
                   type="submit" 

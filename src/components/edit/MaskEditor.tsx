@@ -11,40 +11,63 @@ interface MaskEditorProps {
   onDone: (maskBlob: Blob) => void;
 }
 
+type MaskLine = {
+  points: number[];
+  brushSize: number;
+};
+
 export default function MaskEditor({ src, onDone }: MaskEditorProps) {
   const stageRef = useRef<Konva.Stage>(null);
   const maskLayerRef = useRef<Konva.Layer>(null);
   const [image] = useImage(src, 'anonymous');
   const [brushSize, setBrushSize] = useState(25);
   const [isDrawing, setIsDrawing] = useState(false);
-  const [lines, setLines] = useState<any[]>([]);
+  const [lines, setLines] = useState<MaskLine[]>([]);
   const [hasMask, setHasMask] = useState(false);
 
   const CANVAS_WIDTH = 512;
   const CANVAS_HEIGHT = 512;
 
-  const handleMouseDown = (e: any) => {
+  const getPointerPosition = (e: any) => {
+    const stage = e.target?.getStage?.() ?? stageRef.current;
+    return stage?.getPointerPosition() ?? null;
+  };
+
+  const handleDrawStart = (e: any) => {
+    e.evt?.preventDefault?.();
+    const pos = getPointerPosition(e);
+    if (!pos) return;
+
     setIsDrawing(true);
-    const pos = e.target.getStage().getPointerPosition();
-    setLines([...lines, { points: [pos.x, pos.y], brushSize }]);
+    setLines((currentLines) => [
+      ...currentLines,
+      { points: [pos.x, pos.y], brushSize },
+    ]);
     setHasMask(true);
   };
 
-  const handleMouseMove = (e: any) => {
+  const handleDrawMove = (e: any) => {
+    e.evt?.preventDefault?.();
     if (!isDrawing) return;
 
-    const stage = e.target.getStage();
-    const point = stage.getPointerPosition();
-    const lastLine = lines[lines.length - 1];
-    
-    // Add point to current line
-    lastLine.points = lastLine.points.concat([point.x, point.y]);
-    
-    // Replace last line with updated points
-    setLines([...lines.slice(0, -1), lastLine]);
+    const point = getPointerPosition(e);
+    if (!point) return;
+
+    setLines((currentLines) => {
+      if (currentLines.length === 0) return currentLines;
+
+      const lastLine = currentLines[currentLines.length - 1];
+      const nextLine: MaskLine = {
+        ...lastLine,
+        points: lastLine.points.concat([point.x, point.y]),
+      };
+
+      return [...currentLines.slice(0, -1), nextLine];
+    });
   };
 
-  const handleMouseUp = () => {
+  const handleDrawEnd = (e?: any) => {
+    e?.evt?.preventDefault?.();
     setIsDrawing(false);
   };
 
@@ -116,9 +139,12 @@ export default function MaskEditor({ src, onDone }: MaskEditorProps) {
         <Stage
           width={CANVAS_WIDTH}
           height={CANVAS_HEIGHT}
-          onMouseDown={handleMouseDown}
-          onMousemove={handleMouseMove}
-          onMouseup={handleMouseUp}
+          onMouseDown={handleDrawStart}
+          onMousemove={handleDrawMove}
+          onMouseup={handleDrawEnd}
+          onTouchStart={handleDrawStart}
+          onTouchMove={handleDrawMove}
+          onTouchEnd={handleDrawEnd}
           ref={stageRef}
         >
           {/* Image Layer */}

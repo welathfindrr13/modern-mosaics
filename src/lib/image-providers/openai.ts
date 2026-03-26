@@ -63,7 +63,7 @@ export async function generateWithOpenAI(
     throw new Error('Prompt is required');
   }
 
-  console.log(`[OpenAI] Generating image with prompt: ${prompt.substring(0, 100)}...`);
+  console.log('[OpenAI] Generating image', { promptLength: prompt.length, count });
 
   const openai = getOpenAIClient();
 
@@ -95,16 +95,16 @@ export async function generateWithOpenAI(
       mimeType: 'image/png',
     };
   } catch (error: any) {
-    console.error('[OpenAI] Generation error:', error);
+    const status = error?.response?.status;
+    console.error('[OpenAI] Generation error', {
+      promptLength: prompt.length,
+      count,
+      status,
+      message: error?.message || 'Unknown error',
+    });
 
     // Handle specific OpenAI errors
-    if (error.response) {
-      const status = error.response.status;
-      const errorData = error.response.data;
-
-      console.error('[OpenAI] Response status:', status);
-      console.error('[OpenAI] Error details:', JSON.stringify(errorData, null, 2));
-
+    if (status) {
       // Check for content policy violation
       if (
         error.message?.includes('content policy') ||
@@ -133,17 +133,16 @@ export async function generateMultipleWithOpenAI(
   request: Omit<GenerateImageRequest, 'provider'>,
   count: number
 ): Promise<GeneratedImage[]> {
-  console.log(`[OpenAI] Generating ${count} images in parallel`);
+  console.log('[OpenAI] Generating images in parallel', { count, promptLength: request.prompt.length });
 
   const promises = Array.from({ length: count }, () =>
     generateWithOpenAI(request)
   );
 
   const results = await Promise.all(promises);
-  console.log(`[OpenAI] Successfully generated ${results.length} images`);
+  console.log('[OpenAI] Parallel generation complete', { count: results.length });
 
   return results;
 }
-
 
 

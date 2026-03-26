@@ -9,6 +9,8 @@ import {
   parseSearchParamsWithSchema,
 } from '@/schemas/api';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * GET handler for retrieving order status from Gelato
  * This endpoint checks the current status of an order

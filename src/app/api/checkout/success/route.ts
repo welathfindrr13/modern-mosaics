@@ -11,6 +11,8 @@ import {
   getValidationMessage,
 } from '@/schemas/api';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * Read-only checkout status endpoint.
  * Fulfillment side effects are handled by Stripe webhooks.

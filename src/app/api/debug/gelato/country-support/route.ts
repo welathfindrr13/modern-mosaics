@@ -22,6 +22,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireDebugAdmin } from '@/lib/api-auth';
 import { getGelatoClient, GelatoQuoteRequest, GelatoRecipient } from '@/lib/gelato';
 
+export const dynamic = 'force-dynamic';
+
 // =============================================================================
 // CONFIGURATION
 // =============================================================================

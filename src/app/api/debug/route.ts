@@ -7,6 +7,8 @@ import {
 } from '@/lib/api-auth';
 import { getServerCloudinary } from '@/lib/cloudinary';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * Debug endpoint for diagnosing API issues
  * Only active in development mode for security reasons

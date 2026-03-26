@@ -2,8 +2,31 @@ import { cookies } from 'next/headers'
 import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest, verifyIdToken } from './firebase-admin-auth'
 
-function logAuthenticationFailure() {
-  console.error('Authentication error');
+function isDynamicServerUsageError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const digest = 'digest' in error ? error.digest : null;
+  const message = 'message' in error ? error.message : null;
+
+  return (
+    digest === 'DYNAMIC_SERVER_USAGE' ||
+    (typeof message === 'string' && message.includes('Dynamic server usage'))
+  );
+}
+
+function logAuthenticationFailure(error: unknown) {
+  if (isDynamicServerUsageError(error)) {
+    return;
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    console.warn('Authentication check failed', error);
+    return;
+  }
+
+  console.warn('Authentication check failed');
 }
 
 // Get authenticated user from Firebase ID token
@@ -11,8 +34,8 @@ export async function getAuthenticatedUser(req: NextRequest) {
   try {
     const user = await getUserFromRequest(req);
     return user;
-  } catch {
-    logAuthenticationFailure();
+  } catch (error) {
+    logAuthenticationFailure(error);
     return null;
   }
 }
@@ -44,8 +67,8 @@ export async function getAuthenticatedUserFromCookies() {
           ? decodedToken.firebase.sign_in_provider
           : null,
     };
-  } catch {
-    logAuthenticationFailure();
+  } catch (error) {
+    logAuthenticationFailure(error);
     return null;
   }
 }

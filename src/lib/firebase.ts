@@ -70,8 +70,6 @@ try {
   
   auth = getAuth(app);
   db = getFirestore(app);
-  
-  console.log('Firebase initialized successfully for hosted services');
 } catch (error) {
   console.error('Firebase initialization failed:', error);
   throw error;

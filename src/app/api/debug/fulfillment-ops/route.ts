@@ -3,6 +3,8 @@ import crypto from 'crypto';
 import { requireDebugAdmin } from '@/lib/api-auth';
 import { adminDb } from '@/utils/firestore-admin';
 
+export const dynamic = 'force-dynamic';
+
 const SESSION_FULFILLMENT_COLLECTION = 'stripeSessionFulfillmentState';
 const FULFILLMENT_OPS_QUEUE_COLLECTION = 'fulfillmentOpsQueue';
 const STALE_PROCESSING_MS = 10 * 60 * 1000;

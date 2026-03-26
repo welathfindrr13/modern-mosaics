@@ -19,8 +19,6 @@ const openai = new OpenAI({
   maxRetries: 0,
 });
 
-console.log('OpenAI client initialized with 65s timeout');
-
 export interface GenArgs {
   prompt: string;
   mode?: 'edit';

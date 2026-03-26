@@ -15,6 +15,8 @@ import {
   pricingOptionsQuerySchema,
 } from '@/schemas/api';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * Converted price option for a single size
  */

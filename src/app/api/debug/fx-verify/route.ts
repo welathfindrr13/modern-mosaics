@@ -9,6 +9,8 @@ import {
   CurrencyCode,
 } from '@/utils/fx';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * GET /api/debug/fx-verify
  * 

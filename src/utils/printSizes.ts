@@ -38,6 +38,9 @@ export const GELATO_SKU_DIMENSIONS = {
   // ==========================================================================
   // CANVAS - Stretched (full Gelato UIDs from gelatoPosterSkus.ts)
   // ==========================================================================
+  'canvas_200x250-mm-8x10-inch_canvas_wood-fsc-slim_4-0_ver': { w: 3510, h: 4693 },
+  'canvas_12x16-inch-300x400-mm_canvas_wood-fsc-slim_4-0_ver': { w: 4407, h: 5740 },
+  'canvas_16x20-inch-400x500-mm_canvas_wood-fsc-slim_4-0_ver': { w: 4996, h: 6191 },
   'canvas_200x250-mm-8x10-inch_fine-art-stretched_4-0_ver': { w: 3510, h: 4693 },
   'canvas_300x400-mm-12x16-inch_fine-art-stretched_4-0_ver': { w: 4407, h: 5740 },
   'canvas_400x500-mm-16x20-inch_fine-art-stretched_4-0_ver': { w: 4996, h: 6191 },
@@ -101,6 +104,14 @@ export function getDimensions(size: PrintSizeKey): { w: number; h: number } {
   if (friendlyMatch) return friendlyMatch;
   
   throw new Error(`Unknown print size: ${size}`);
+}
+
+export function getDimensionsForProductUid(productUid: string): { w: number; h: number } {
+  const dims = GELATO_SKU_DIMENSIONS[productUid as GelatoSku];
+  if (!dims) {
+    throw new Error(`Unknown Gelato product UID dimensions: ${productUid}`);
+  }
+  return dims;
 }
 
 /**

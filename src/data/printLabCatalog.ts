@@ -40,6 +40,13 @@ export interface PrintLabSelection {
   sizeKey: SizeKey;
 }
 
+export interface ResolvedProductSelection extends PrintLabSelection {
+  productUid: string;
+  label: string;
+  productName: string;
+  priceGBP: number;
+}
+
 // =============================================================================
 // CATALOG DEFINITION
 // =============================================================================
@@ -140,6 +147,38 @@ export function resolveSkuUid(selection: PrintLabSelection): string | null {
   }
   
   return skuUid;
+}
+
+export function getProductSelectionByUid(productUid: string): ResolvedProductSelection | null {
+  for (const productType of Object.keys(SKU_MAP) as ProductType[]) {
+    const sizeMap = SKU_MAP[productType];
+    for (const sizeKey of Object.keys(sizeMap) as SizeKey[]) {
+      if (sizeMap[sizeKey] !== productUid) continue;
+
+      const catalog = PRINT_LAB_CATALOG[productType];
+      const size = catalog.sizes.find(option => option.key === sizeKey);
+      if (!size) return null;
+
+      const resolvedUid = resolveSkuUid({ productType, sizeKey });
+      if (resolvedUid !== productUid) return null;
+
+      return {
+        productType,
+        sizeKey,
+        productUid,
+        label: size.label,
+        productName: `${catalog.title} – ${size.label}`,
+        priceGBP: size.priceGBP,
+      };
+    }
+  }
+
+  return null;
+}
+
+export function assertProductUidMatchesSizeKey(productUid: string, sizeKey: SizeKey): boolean {
+  const selection = getProductSelectionByUid(productUid);
+  return selection?.sizeKey === sizeKey;
 }
 
 /**

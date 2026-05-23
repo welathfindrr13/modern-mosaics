@@ -1,4 +1,4 @@
-import { PrintSizeKey, getDimensions, getDimensionsFromSizeKey } from './printSizes';
+import { PrintSizeKey, getDimensions, getDimensionsForProductUid, getDimensionsFromSizeKey } from './printSizes';
 import type { SizeKey } from '@/data/printLabCatalog';
 
 // =============================================================================
@@ -54,6 +54,34 @@ const PRINT_ENHANCEMENTS: Record<string, string> = {
   denoise: 'e_noise_reduction:80',
 };
 
+function buildEnhancementTransforms(transforms?: string): string {
+  if (!transforms) return '';
+  const enhancementTransforms = transforms
+    .split(',')
+    .map(key => PRINT_ENHANCEMENTS[key.trim()])
+    .filter(Boolean)
+    .join('/');
+  return enhancementTransforms ? `${enhancementTransforms}/` : '';
+}
+
+function buildPrintUrl(params: {
+  publicId: string;
+  dimensions: { w: number; h: number };
+  transforms?: string;
+  cropParams?: CropParams;
+  sourceWidth?: number;
+  sourceHeight?: number;
+  cloud: string;
+}): string {
+  const { publicId, dimensions, transforms, cropParams, sourceWidth, sourceHeight, cloud } = params;
+  let cropTransform = '';
+  if (cropParams && sourceWidth && sourceHeight) {
+    cropTransform = buildCropTransform(cropParams, sourceWidth, sourceHeight);
+  }
+  const enhancementTransforms = buildEnhancementTransforms(transforms);
+  return `https://res.cloudinary.com/${cloud}/image/upload/${cropTransform}${enhancementTransforms}c_scale,w_${dimensions.w},h_${dimensions.h}/q_90/f_jpg/${publicId}`;
+}
+
 /**
  * Generate Gelato-ready print URLs using Cloudinary transformations
  * 
@@ -85,22 +113,8 @@ export function makeCloudinaryPrintUrl(
 
   const { w, h } = getDimensions(size);
   
-  // Build enhancement transform string if provided
-  // Order: enhancements → scale → quality → format
-  let enhancementTransforms = '';
-  if (transforms) {
-    enhancementTransforms = transforms
-      .split(',')
-      .map(key => PRINT_ENHANCEMENTS[key.trim()])
-      .filter(Boolean)
-      .join('/');
-    if (enhancementTransforms) {
-      enhancementTransforms += '/';
-    }
-  }
-  
   // Deterministic URL: [enhancements/] scale to print dimensions, quality 90, JPEG output
-  const url = `https://res.cloudinary.com/${cloud}/image/upload/${enhancementTransforms}c_scale,w_${w},h_${h}/q_90/f_jpg/${publicId}`;
+  const url = buildPrintUrl({ publicId, dimensions: { w, h }, transforms, cloud });
   
   console.log(`Generated Gelato print URL for ${size} (${w}x${h})${transforms ? ` with transforms: ${transforms}` : ''}:`, url);
   
@@ -134,30 +148,51 @@ export function makeCloudinaryPrintUrlFromSizeKey(
 
   const { w, h } = getDimensionsFromSizeKey(sizeKey);
   
-  // 1. Build crop transform (if crop params + source dimensions available)
-  let cropTransform = '';
-  if (cropParams && sourceWidth && sourceHeight) {
-    cropTransform = buildCropTransform(cropParams, sourceWidth, sourceHeight);
-  }
-  
-  // 2. Build enhancement transform string if provided
-  let enhancementTransforms = '';
-  if (transforms) {
-    enhancementTransforms = transforms
-      .split(',')
-      .map(key => PRINT_ENHANCEMENTS[key.trim()])
-      .filter(Boolean)
-      .join('/');
-    if (enhancementTransforms) {
-      enhancementTransforms += '/';
-    }
-  }
-  
   // 3. Build final URL: crop → enhancements → scale → quality → format
-  const url = `https://res.cloudinary.com/${cloud}/image/upload/${cropTransform}${enhancementTransforms}c_scale,w_${w},h_${h}/q_90/f_jpg/${publicId}`;
+  const url = buildPrintUrl({
+    publicId,
+    dimensions: { w, h },
+    transforms,
+    cropParams,
+    sourceWidth,
+    sourceHeight,
+    cloud,
+  });
   
   console.log(`Generated print URL for sizeKey ${sizeKey} (${w}x${h})${cropParams ? ' with crop' : ''}${transforms ? ` with transforms: ${transforms}` : ''}:`, url);
   
+  return url;
+}
+
+export function makeCloudinaryPrintUrlForProductUid(
+  publicId: string,
+  productUid: string,
+  transforms?: string,
+  cropParams?: CropParams,
+  sourceWidth?: number,
+  sourceHeight?: number,
+  cloud = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME!,
+): string {
+  if (!cloud) {
+    throw new Error('Missing NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME environment variable');
+  }
+
+  const dimensions = getDimensionsForProductUid(productUid);
+  const url = buildPrintUrl({
+    publicId,
+    dimensions,
+    transforms,
+    cropParams,
+    sourceWidth,
+    sourceHeight,
+    cloud,
+  });
+
+  console.log(
+    `Generated print URL for productUid ${productUid} (${dimensions.w}x${dimensions.h})${cropParams ? ' with crop' : ''}${transforms ? ` with transforms: ${transforms}` : ''}:`,
+    url
+  );
+
   return url;
 }
 

@@ -193,6 +193,19 @@ export const adminImageOperations = {
     return null;
   },
 
+  async getByCloudinaryPublicId(userId: string, cloudinaryPublicId: string): Promise<ClientImage | null> {
+    const imagesQuery = adminDb
+      .collection('users')
+      .doc(userId)
+      .collection('images')
+      .where('cloudinaryPublicId', '==', cloudinaryPublicId)
+      .limit(1);
+    const snap = await imagesQuery.get();
+    if (snap.empty) return null;
+    const doc = snap.docs[0];
+    return convertFirestoreImage(doc.id, doc.data() as FirestoreImage);
+  },
+
   /**
    * Delete an image
    */

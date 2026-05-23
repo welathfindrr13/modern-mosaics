@@ -7,11 +7,14 @@ import {
   validateGelatoAddress,
   GelatoAddress,
 } from '@/lib/gelato';
-import { printUrl, validatePrintUrl, makeCloudinaryPrintUrlFromSizeKey } from '@/utils/cloudinaryPrint';
-import { PRINT_SIZES } from '@/utils/printSizes';
+import {
+  CropParams,
+  makeCloudinaryPrintUrlForProductUid,
+  validatePrintUrl,
+} from '@/utils/cloudinaryPrint';
 import { LocalOrder, OrderStatus } from '@/models/order';
 import { adminDb, adminOrderOperations } from '@/utils/firestore-admin';
-import type { SizeKey } from '@/data/printLabCatalog';
+import { getProductSelectionByUid } from '@/data/printLabCatalog';
 
 export type SessionFulfillmentState =
   | 'processing'
@@ -58,6 +61,7 @@ export type FulfillmentErrorCode =
   | 'INVALID_ADDRESS_PAYLOAD'
   | 'ADDRESS_VALIDATION_FAILED'
   | 'INVALID_PRODUCT_TYPE'
+  | 'PRINT_URL_INVALID'
   | 'GELATO_ORDER_ID_MISSING'
   | 'UPSTREAM_TRANSIENT'
   | 'UNKNOWN_TRANSIENT';
@@ -218,6 +222,17 @@ function retryable(code: FulfillmentErrorCode, message: string): never {
   throw new FulfillmentError(code, message, true);
 }
 
+export function parseCropParamsFromMetadata(value?: string | null): CropParams | undefined {
+  if (!value) return undefined;
+  const [x, y, width, height, rotation] = value.split(',').map(part => Number(part));
+  if (![x, y, width, height].every(Number.isFinite)) return undefined;
+  const cropParams: CropParams = { x, y, width, height };
+  if ([90, 180, 270].includes(rotation)) {
+    cropParams.rotation = rotation as 90 | 180 | 270;
+  }
+  return cropParams;
+}
+
 export function toLocalOrderFromStoredOrder(storedOrder: any): LocalOrder {
   const shippingAddress = storedOrder.shippingAddress || {};
   const gelatoOrderId = storedOrder.gelatoOrderId || storedOrder.id;
@@ -343,26 +358,59 @@ export async function fulfillPaidCheckoutSession(
     };
   }
 
-  const leaseState = await acquireFulfillmentLease(stripeSessionId);
-  if (leaseState === 'processing') {
-    return { status: 'processing' };
+  const existingOrder = await getOrderByStripeSessionId(stripeSessionId);
+  if (existingOrder) {
+    return {
+      status: 'fulfilled',
+      idempotent: true,
+      localOrder: existingOrder,
+      order: {
+        id: existingOrder.id,
+        referenceId: existingOrder.referenceId,
+        status: existingOrder.status,
+        created: existingOrder.createdAt,
+      },
+    };
   }
-  if (leaseState === 'fulfilled') {
-    const order = await getOrderFromFulfillmentState(stripeSessionId);
-    if (order) {
+
+  const preLeaseState = await getSessionFulfillmentState(stripeSessionId);
+  if (!preLeaseState?.gelatoOrderId) {
+    const leaseState = await acquireFulfillmentLease(stripeSessionId);
+    if (leaseState === 'processing') {
+      return { status: 'processing' };
+    }
+
+    const postLeaseExistingOrder = await getOrderByStripeSessionId(stripeSessionId);
+    if (postLeaseExistingOrder) {
       return {
         status: 'fulfilled',
         idempotent: true,
-        localOrder: order,
+        localOrder: postLeaseExistingOrder,
         order: {
-          id: order.id,
-          referenceId: order.referenceId,
-          status: order.status,
-          created: order.createdAt,
+          id: postLeaseExistingOrder.id,
+          referenceId: postLeaseExistingOrder.referenceId,
+          status: postLeaseExistingOrder.status,
+          created: postLeaseExistingOrder.createdAt,
         },
       };
     }
-    return { status: 'processing' };
+    if (leaseState === 'fulfilled') {
+      const order = await getOrderFromFulfillmentState(stripeSessionId);
+      if (order) {
+        return {
+          status: 'fulfilled',
+          idempotent: true,
+          localOrder: order,
+          order: {
+            id: order.id,
+            referenceId: order.referenceId,
+            status: order.status,
+            created: order.createdAt,
+          },
+        };
+      }
+      return { status: 'processing' };
+    }
   }
 
   const stripe = getServerStripe();
@@ -393,16 +441,19 @@ export async function fulfillPaidCheckoutSession(
     productUid,
     imagePublicId,
     shippingMethodUid,
-    size,
-    sizeKey,
     quantity: quantityStr,
     currency,
     shippingAddress: shippingAddressStr,
     transforms,
   } = metadata;
 
-  if (!productUid || !imagePublicId || !shippingMethodUid || !size || !shippingAddressStr) {
+  if (!productUid || !imagePublicId || !shippingMethodUid || !shippingAddressStr) {
     nonRetryable('INCOMPLETE_METADATA', 'Incomplete checkout metadata');
+  }
+
+  const productSelection = getProductSelectionByUid(productUid);
+  if (!productSelection) {
+    nonRetryable('INVALID_PRODUCT_TYPE', 'Invalid product configuration');
   }
 
   const userUid = metadata.userUid || session.client_reference_id || options?.fallbackUserUid || null;
@@ -430,29 +481,26 @@ export async function fulfillPaidCheckoutSession(
   const orderReferenceId = `MM-${referenceSeed}`;
   const customerReferenceId = `CUST-${customerSeed}`;
 
-  let printFileUrl: string;
-  if (sizeKey && ['8x10', '12x16', '16x20', '18x24'].includes(sizeKey)) {
-    printFileUrl = makeCloudinaryPrintUrlFromSizeKey(imagePublicId, sizeKey as SizeKey, transforms || undefined);
-  } else {
-    let sku: keyof typeof PRINT_SIZES;
-    if (productUid.startsWith('flat_')) {
-      sku = `poster-${size.toLowerCase()}` as keyof typeof PRINT_SIZES;
-    } else if (productUid.startsWith('canvas_')) {
-      const sizeStr = size.toLowerCase().replace('_', '-');
-      sku = `canvas-${sizeStr}` as keyof typeof PRINT_SIZES;
-    } else {
-      nonRetryable('INVALID_PRODUCT_TYPE', 'Invalid product type');
-    }
-    printFileUrl = printUrl(imagePublicId, sku, transforms || undefined);
-  }
+  const cropParams = parseCropParamsFromMetadata(metadata.cropParams);
+  const sourceWidth = Number.parseInt(metadata.sourceWidth || '', 10);
+  const sourceHeight = Number.parseInt(metadata.sourceHeight || '', 10);
+  const printFileUrl = makeCloudinaryPrintUrlForProductUid(
+    imagePublicId,
+    productSelection.productUid,
+    transforms || undefined,
+    cropParams,
+    Number.isFinite(sourceWidth) ? sourceWidth : undefined,
+    Number.isFinite(sourceHeight) ? sourceHeight : undefined
+  );
 
   try {
     const isUrlValid = await validatePrintUrl(printFileUrl);
     if (!isUrlValid) {
-      console.warn('[FULFILLMENT] Generated print URL failed validation');
+      nonRetryable('PRINT_URL_INVALID', 'Generated print URL failed validation');
     }
-  } catch {
-    console.warn('[FULFILLMENT] Print URL validation failed');
+  } catch (error) {
+    if (error instanceof FulfillmentError) throw error;
+    nonRetryable('PRINT_URL_INVALID', 'Print URL validation failed');
   }
 
   const files: GelatoOrderFile[] = [{ type: 'default', url: printFileUrl }];
@@ -473,23 +521,46 @@ export async function fulfillPaidCheckoutSession(
     shippingMethodUid,
   };
 
-  const gelatoClient = getGelatoClient();
   let orderResponse;
-  try {
-    orderResponse = await gelatoClient.createOrder(gelatoOrderRequest);
-  } catch (error) {
-    const classified = classifyFulfillmentError(error);
-    if (classified.retryable) {
-      retryable(classified.code, classified.message);
+  let gelatoOrderId: string;
+  const preCreateState = await getSessionFulfillmentState(stripeSessionId);
+  if (preCreateState?.gelatoOrderId) {
+    gelatoOrderId = preCreateState.gelatoOrderId;
+    orderResponse = {
+      gelatoOrderId,
+      orderReferenceId: (preCreateState as any).gelatoOrderReferenceId || orderReferenceId,
+      status: 'CREATED',
+      created: new Date().toISOString(),
+    };
+  } else {
+    const gelatoClient = getGelatoClient();
+    try {
+      orderResponse = await gelatoClient.createOrder(gelatoOrderRequest);
+    } catch (error) {
+      const classified = classifyFulfillmentError(error);
+      if (classified.retryable) {
+        retryable(classified.code, classified.message);
+      }
+      nonRetryable(classified.code, classified.message);
     }
-    nonRetryable(classified.code, classified.message);
-  }
 
-  const gelatoOrderId =
-    orderResponse.gelatoOrderId || (orderResponse as any).id || (orderResponse as any).orderId;
+    gelatoOrderId = orderResponse.gelatoOrderId || (orderResponse as any).id || (orderResponse as any).orderId;
 
-  if (!gelatoOrderId) {
-    nonRetryable('GELATO_ORDER_ID_MISSING', 'Gelato order response missing order ID');
+    if (!gelatoOrderId) {
+      nonRetryable('GELATO_ORDER_ID_MISSING', 'Gelato order response missing order ID');
+    }
+
+    await markFulfillmentState(stripeSessionId, {
+      status: 'processing',
+      fulfillmentState: 'processing',
+      gelatoOrderId,
+      gelatoOrderReferenceId: orderResponse.orderReferenceId || orderReferenceId,
+      userUid,
+      stripeSessionId,
+      stripeEventId: options?.stripeEventId || null,
+      stripePaymentStatus: session.payment_status,
+      gelatoCreatedAtMs: Date.now(),
+    });
   }
 
   let lineItems;
@@ -517,7 +588,7 @@ export async function fulfillPaidCheckoutSession(
   const localOrder: LocalOrder = {
     id: gelatoOrderId,
     referenceId: orderResponse.orderReferenceId || orderReferenceId,
-    productName: `Custom Print - ${size}`,
+    productName: productSelection.productName,
     productUid,
     imageId: imagePublicId,
     previewUrl: `https://res.cloudinary.com/${process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME}/image/upload/${imagePublicId}`,
@@ -543,9 +614,9 @@ export async function fulfillPaidCheckoutSession(
       imageId: imagePublicId,
       productDetails: {
         uid: productUid,
-        name: `Custom Print - ${size}`,
-        size: size,
-        type: productUid.startsWith('flat_') ? 'poster' : 'canvas',
+        name: productSelection.productName,
+        size: productSelection.sizeKey,
+        type: productSelection.productType,
       },
       pricing: {
         productPrice: productCost,

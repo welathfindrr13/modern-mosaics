@@ -3,8 +3,6 @@ import { requireAuth, getAuthenticatedUser, getUserEmail } from '@/lib/api-auth'
 import { getServerStripe } from '@/lib/stripe';
 import {
   getTrustedUnitPriceForCurrency,
-  deriveProductType,
-  deriveSizeKey,
   type CurrencyCode,
 } from '@/utils/priceUtils';
 import { getCurrencyForCountry } from '@/utils/currency';
@@ -24,6 +22,9 @@ import {
   checkoutSessionRequestSchema,
   getValidationMessage,
 } from '@/schemas/api';
+import { getGelatoClient, GelatoQuoteRequest, mapAddressToGelato, validateGelatoAddress } from '@/lib/gelato';
+import { getProductSelectionByUid } from '@/data/printLabCatalog';
+import { verifyCheckoutImageOwnership } from '@/lib/checkout-image-ownership';
 
 // =============================================================================
 // HARDENED CHECKOUT SESSION ENDPOINT
@@ -123,30 +124,37 @@ export async function POST(request: NextRequest) {
       currency = 'GBP';
     }
 
-    // ==========================================================================
-    // DERIVE PRODUCT TYPE AND SIZE FROM productUid
-    // ==========================================================================
-    const productType = deriveProductType(orderData.productUid);
-    if (!productType) {
+    const productSelection = getProductSelectionByUid(orderData.productUid);
+    if (!productSelection) {
       return NextResponse.json(
         { error: 'Invalid product configuration', code: 'INVALID_INPUT' }, 
         { status: 400 }
       );
     }
-    
-    // Prefer sizeKey from payload, fall back to deriving from UID
-    const sizeKey = orderData.sizeKey || deriveSizeKey(orderData.productUid);
-    if (!sizeKey) {
+
+    if (orderData.sizeKey && orderData.sizeKey !== productSelection.sizeKey) {
       return NextResponse.json(
-        { error: 'Invalid product size configuration', code: 'INVALID_INPUT' }, 
+        { error: 'Product size does not match selected SKU.', code: 'INVALID_INPUT' },
         { status: 400 }
       );
     }
-    
+
+    const ownership = await verifyCheckoutImageOwnership(user.uid, orderData.imagePublicId);
+    if (!ownership.ok) {
+      return NextResponse.json(
+        { error: ownership.reason, code: 'FORBIDDEN_IMAGE' },
+        { status: 403 }
+      );
+    }
+
     // ==========================================================================
     // COMPUTE TRUSTED PRICE WITH FX CONVERSION (ignore client price)
     // ==========================================================================
-    const priceResult = getTrustedUnitPriceForCurrency(productType, sizeKey, currency);
+    const priceResult = getTrustedUnitPriceForCurrency(
+      productSelection.productType,
+      productSelection.sizeKey,
+      currency
+    );
     
     if (!priceResult) {
       return NextResponse.json(
@@ -155,22 +163,88 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // ==========================================================================
-    // VALIDATE SHIPPING COST AND CURRENCY
-    // ==========================================================================
-    const shippingCost = orderData.shippingCost ?? 0;
-    if (shippingCost < 0 || isNaN(shippingCost)) {
+    if (!orderData.shippingMethodUid) {
       return NextResponse.json(
-        { error: 'Invalid shipping cost', code: 'INVALID_INPUT' }, 
+        { error: 'Missing shipping method', code: 'INVALID_INPUT' },
         { status: 400 }
       );
     }
-    
+
     // Validate shipping currency matches derived currency
     // TODO: Make shippingCurrency required once UI is updated
     if (orderData.shippingCurrency && orderData.shippingCurrency.toUpperCase() !== currency) {
       return NextResponse.json(
         { error: `Currency mismatch: shipping is in ${orderData.shippingCurrency} but checkout is in ${currency}`, code: 'INVALID_INPUT' },
+        { status: 400 }
+      );
+    }
+
+    const addressValidationError = validateGelatoAddress(orderData.shippingAddress);
+    if (addressValidationError) {
+      return NextResponse.json(
+        { error: `Invalid shipping address: ${addressValidationError}`, code: 'INVALID_INPUT' },
+        { status: 400 }
+      );
+    }
+
+    const authenticatedEmail = await getUserEmail(request);
+    const checkoutEmail = authenticatedEmail || orderData.shippingAddress.email || undefined;
+    const gelatoShippingAddress = mapAddressToGelato(orderData.shippingAddress);
+    const quoteRequest: GelatoQuoteRequest = {
+      orderReferenceId: `QUOTE-${user.uid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12) || 'user'}-${Date.now()}`,
+      customerReferenceId: `CUST-${user.uid.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12) || 'user'}-${Date.now()}`,
+      currency,
+      allowMultipleQuotes: false,
+      recipient: {
+        firstName: gelatoShippingAddress.firstName,
+        lastName: gelatoShippingAddress.lastName,
+        addressLine1: gelatoShippingAddress.addressLine1,
+        addressLine2: gelatoShippingAddress.addressLine2,
+        city: gelatoShippingAddress.city,
+        postCode: gelatoShippingAddress.postCode,
+        state: gelatoShippingAddress.state,
+        country: gelatoShippingAddress.country,
+        email: gelatoShippingAddress.email || checkoutEmail || user.email || '',
+        phone: gelatoShippingAddress.phone,
+      },
+      products: [
+        {
+          itemReferenceId: 'checkout-item-1',
+          productUid: productSelection.productUid,
+          quantity,
+          files: [],
+        },
+      ],
+    };
+
+    const quoteResponse = await getGelatoClient().quoteOrder(quoteRequest);
+    const freshQuote = quoteResponse.quotes?.[0];
+    const quotedProduct = freshQuote?.products?.find(product => product.productUid === productSelection.productUid);
+    const selectedShippingMethod = freshQuote?.shipmentMethods?.find(
+      method => method.shipmentMethodUid === orderData.shippingMethodUid
+    );
+
+    if (!freshQuote || !quotedProduct || !selectedShippingMethod) {
+      return NextResponse.json(
+        { error: 'Selected shipping method is no longer available.', code: 'INVALID_INPUT' },
+        { status: 400 }
+      );
+    }
+
+    if (
+      quotedProduct.currency?.toUpperCase() !== currency ||
+      selectedShippingMethod.currency?.toUpperCase() !== currency
+    ) {
+      return NextResponse.json(
+        { error: 'Quoted currency does not match checkout currency.', code: 'INVALID_INPUT' },
+        { status: 400 }
+      );
+    }
+
+    const shippingCost = selectedShippingMethod.price;
+    if (shippingCost < 0 || !Number.isFinite(shippingCost)) {
+      return NextResponse.json(
+        { error: 'Invalid quoted shipping cost', code: 'INVALID_INPUT' },
         { status: 400 }
       );
     }
@@ -185,8 +259,6 @@ export async function POST(request: NextRequest) {
     // ==========================================================================
     // BUILD STRIPE LINE ITEMS WITH CONVERTED PRICES
     // ==========================================================================
-    const authenticatedEmail = await getUserEmail(request);
-    const checkoutEmail = authenticatedEmail || orderData.shippingAddress.email || undefined;
     const stripe = getServerStripe();
 
     // Product line item with converted price
@@ -204,8 +276,8 @@ export async function POST(request: NextRequest) {
         price_data: {
           currency: currency.toLowerCase(),
           product_data: {
-            name: orderData.productName,
-            description: `Custom mosaic artwork - ${sizeKey}`,
+            name: productSelection.productName,
+            description: `Custom mosaic artwork - ${productSelection.sizeKey}`,
             images: [`https://res.cloudinary.com/${process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME}/image/upload/${orderData.imagePublicId}`],
           },
           unit_amount: productUnitAmount,
@@ -243,7 +315,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.info(`[CHECKOUT] Session create request accepted (${productType}/${sizeKey}, ${currency})`);
+    console.info(`[CHECKOUT] Session create request accepted (${productSelection.productType}/${productSelection.sizeKey}, ${currency})`);
 
     const confirmationNonce = generateConfirmationNonce();
     const isProduction = process.env.NODE_ENV === 'production';
@@ -297,9 +369,9 @@ export async function POST(request: NextRequest) {
         // =================================================================
         // FULL AUDIT TRAIL for currency conversion verification
         // =================================================================
-        productUid: orderData.productUid,
-        productType: productType,
-        sizeKey: sizeKey,
+        productUid: productSelection.productUid,
+        productType: productSelection.productType,
+        sizeKey: productSelection.sizeKey,
         quantity: quantity.toString(), // ALWAYS "1"
         
         // GBP base pricing (canonical source)
@@ -315,6 +387,11 @@ export async function POST(request: NextRequest) {
         shippingCost: shippingCost.toFixed(2),
         shippingCurrency: currency,
         trustedTotal: trustedTotal.toFixed(2),
+        serverQuotedShippingCost: shippingCost.toFixed(2),
+        serverQuotedShippingCurrency: currency,
+        serverQuotedShippingMethodUid: selectedShippingMethod.shipmentMethodUid,
+        serverTrustedTotal: trustedTotal.toFixed(2),
+        clientReportedShippingCost: (orderData.shippingCost ?? 0).toFixed(2),
         
         // Stripe unit amounts (for verification)
         stripeProductAmount: productUnitAmount.toString(),
@@ -324,7 +401,7 @@ export async function POST(request: NextRequest) {
         userUid: user.uid,
         confirmationNonce,
         imagePublicId: orderData.imagePublicId,
-        shippingMethodUid: orderData.shippingMethodUid,
+        shippingMethodUid: selectedShippingMethod.shipmentMethodUid,
         shippingAddress: JSON.stringify(orderData.shippingAddress),
         transforms: orderData.transforms || '',
         
@@ -337,7 +414,7 @@ export async function POST(request: NextRequest) {
         destinationCountry: countryCode,
         
         // Legacy field for backward compatibility
-        size: orderData.size || sizeKey,
+        size: productSelection.sizeKey,
         currency: currency, // Legacy field
       },
       shipping_address_collection: {

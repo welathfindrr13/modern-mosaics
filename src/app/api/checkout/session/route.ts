@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, getAuthenticatedUser, getUserEmail } from '@/lib/api-auth';
 import { getServerStripe } from '@/lib/stripe';
-import {
-  getTrustedUnitPriceForCurrency,
-  type CurrencyCode,
-} from '@/utils/priceUtils';
+import type { CurrencyCode } from '@/utils/priceUtils';
 import { getCurrencyForCountry } from '@/utils/currency';
 import {
+  convertFromGBP,
+  getFxRate,
+  roundToMinorUnits,
   validateCurrency,
   toStripeUnitAmount,
 } from '@/utils/fx';
@@ -25,6 +25,28 @@ import {
 import { getGelatoClient, GelatoQuoteRequest, mapAddressToGelato, validateGelatoAddress } from '@/lib/gelato';
 import { getProductSelectionByUid } from '@/data/printLabCatalog';
 import { verifyCheckoutImageOwnership } from '@/lib/checkout-image-ownership';
+
+function getCatalogPriceForCurrency(baseGBP: number, currency: CurrencyCode) {
+  if (currency === 'GBP') {
+    return {
+      baseGBP,
+      currency,
+      fxRate: 1,
+      converted: baseGBP,
+      stripeUnitAmount: toStripeUnitAmount(baseGBP, currency),
+    };
+  }
+
+  const fxRate = getFxRate('GBP', currency);
+  const converted = roundToMinorUnits(convertFromGBP(baseGBP, currency), currency);
+  return {
+    baseGBP,
+    currency,
+    fxRate,
+    converted,
+    stripeUnitAmount: toStripeUnitAmount(converted, currency),
+  };
+}
 
 // =============================================================================
 // HARDENED CHECKOUT SESSION ENDPOINT
@@ -150,18 +172,7 @@ export async function POST(request: NextRequest) {
     // ==========================================================================
     // COMPUTE TRUSTED PRICE WITH FX CONVERSION (ignore client price)
     // ==========================================================================
-    const priceResult = getTrustedUnitPriceForCurrency(
-      productSelection.productType,
-      productSelection.sizeKey,
-      currency
-    );
-    
-    if (!priceResult) {
-      return NextResponse.json(
-        { error: 'Unable to determine product price. Please try again.', code: 'INVALID_INPUT' }, 
-        { status: 400 }
-      );
-    }
+    const priceResult = getCatalogPriceForCurrency(productSelection.priceGBP, currency);
     
     if (!orderData.shippingMethodUid) {
       return NextResponse.json(

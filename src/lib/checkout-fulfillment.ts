@@ -86,6 +86,7 @@ export type FulfillmentErrorInfo = {
 export type LegacyOrderLookupResult = {
   order: LocalOrder | null;
   failedPrecondition: boolean;
+  lookupFailed?: boolean;
   lookupErrorCode?: string;
 };
 
@@ -293,13 +294,22 @@ export async function getOrderByStripeSessionIdDetailed(stripeSessionId: string)
     return {
       order: null,
       failedPrecondition: isFirestoreFailedPrecondition(error),
-      lookupErrorCode: err?.code ? String(err.code) : undefined,
+      lookupFailed: true,
+      lookupErrorCode: err?.code ? String(err.code) : 'UNKNOWN',
     };
   }
 }
 
 export async function getOrderByStripeSessionId(stripeSessionId: string): Promise<LocalOrder | null> {
   const result = await getOrderByStripeSessionIdDetailed(stripeSessionId);
+  return result.order;
+}
+
+async function getExistingOrderByStripeSessionIdOrFail(stripeSessionId: string): Promise<LocalOrder | null> {
+  const result = await getOrderByStripeSessionIdDetailed(stripeSessionId);
+  if (result.failedPrecondition || result.lookupFailed || result.lookupErrorCode) {
+    retryable('UPSTREAM_TRANSIENT', `Failed to verify existing order for Stripe session ${stripeSessionId}`);
+  }
   return result.order;
 }
 
@@ -358,7 +368,7 @@ export async function fulfillPaidCheckoutSession(
     };
   }
 
-  const existingOrder = await getOrderByStripeSessionId(stripeSessionId);
+  const existingOrder = await getExistingOrderByStripeSessionIdOrFail(stripeSessionId);
   if (existingOrder) {
     return {
       status: 'fulfilled',
@@ -380,7 +390,7 @@ export async function fulfillPaidCheckoutSession(
       return { status: 'processing' };
     }
 
-    const postLeaseExistingOrder = await getOrderByStripeSessionId(stripeSessionId);
+    const postLeaseExistingOrder = await getExistingOrderByStripeSessionIdOrFail(stripeSessionId);
     if (postLeaseExistingOrder) {
       return {
         status: 'fulfilled',
@@ -411,6 +421,10 @@ export async function fulfillPaidCheckoutSession(
       }
       return { status: 'processing' };
     }
+  }
+
+  if (preLeaseState?.orderDocId) {
+    return { status: 'processing' };
   }
 
   const stripe = getServerStripe();

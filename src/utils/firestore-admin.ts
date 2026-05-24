@@ -331,7 +331,7 @@ export const adminOrderOperations = {
     } catch (error) {
       const err = error as { code?: string | number; message?: string };
       console.warn('[FIRESTORE_ADMIN] getByStripeSessionId query failed:', err?.code ?? 'unknown', err?.message ?? 'unknown');
-      return null;
+      throw error;
     }
     
     if (!querySnapshot.empty) {

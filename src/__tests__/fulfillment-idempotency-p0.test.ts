@@ -5,6 +5,7 @@ const createOrder = vi.fn();
 const retrieveSession = vi.fn();
 const listLineItems = vi.fn();
 const createFirestoreOrder = vi.fn();
+const getByStripeSessionId = vi.fn();
 
 vi.mock('@/lib/gelato', async () => {
   const actual = await vi.importActual<typeof import('@/lib/gelato')>('@/lib/gelato');
@@ -56,7 +57,7 @@ vi.mock('@/utils/firestore-admin', () => ({
     }),
   },
   adminOrderOperations: {
-    getByStripeSessionId: vi.fn().mockResolvedValue(null),
+    getByStripeSessionId,
     getById: vi.fn().mockResolvedValue(null),
     getByUserAndGelatoOrderId: vi.fn().mockResolvedValue(null),
     create: createFirestoreOrder,
@@ -101,6 +102,7 @@ describe('fulfillment idempotency P0', () => {
       status: 'CREATED',
       created: '2026-05-23T00:00:00.000Z',
     });
+    getByStripeSessionId.mockResolvedValue(null);
     createFirestoreOrder.mockResolvedValue('order_doc_1');
   });
 
@@ -124,5 +126,43 @@ describe('fulfillment idempotency P0', () => {
     expect(createOrder).toHaveBeenCalledTimes(1);
     expect(createFirestoreOrder).toHaveBeenCalledTimes(1);
     expect(result.status).toBe('fulfilled');
+  });
+
+  it('fails closed before Gelato create when existing-order lookup fails', async () => {
+    const { fulfillPaidCheckoutSession } = await import('@/lib/checkout-fulfillment');
+    getByStripeSessionId.mockRejectedValueOnce(new Error('Firestore unavailable'));
+
+    await expect(fulfillPaidCheckoutSession('cs_retry_123', { stripeEventId: 'evt_1' })).rejects.toMatchObject({
+      code: 'UPSTREAM_TRANSIENT',
+    });
+
+    expect(createOrder).not.toHaveBeenCalled();
+  });
+
+  it('does not create duplicate Firestore order docs when retrying with persisted gelatoOrderId and orderDocId', async () => {
+    const { fulfillPaidCheckoutSession } = await import('@/lib/checkout-fulfillment');
+    fulfillmentState.set('cs_retry_123', {
+      status: 'processing',
+      fulfillmentState: 'processing',
+      gelatoOrderId: 'gelato_1',
+      gelatoOrderReferenceId: 'MM-retry',
+      userUid: 'user-1',
+      stripeSessionId: 'cs_retry_123',
+      stripePaymentStatus: 'paid',
+    });
+    listLineItems.mockResolvedValue({
+      data: [{ description: 'Shipping', amount_total: 425 }],
+    });
+
+    await expect(fulfillPaidCheckoutSession('cs_retry_123', { stripeEventId: 'evt_1' })).resolves.toMatchObject({
+      status: 'fulfilled',
+    });
+    await expect(fulfillPaidCheckoutSession('cs_retry_123', { stripeEventId: 'evt_2' })).resolves.toMatchObject({
+      status: 'processing',
+    });
+
+    expect(createOrder).not.toHaveBeenCalled();
+    expect(createFirestoreOrder).toHaveBeenCalledTimes(1);
+    expect(fulfillmentState.get('cs_retry_123')?.orderDocId).toBe('order_doc_1');
   });
 });

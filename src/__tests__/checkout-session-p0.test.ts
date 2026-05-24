@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const quoteOrder = vi.fn();
 const stripeCreate = vi.fn();
 const getByCloudinaryPublicId = vi.fn();
+const getTrustedUnitPriceForCurrency = vi.fn();
 
 vi.mock('@/lib/api-auth', () => ({
   requireAuth: vi.fn().mockResolvedValue(null),
@@ -44,6 +45,10 @@ vi.mock('@/utils/firestore-admin', () => ({
 
 vi.mock('@/lib/confirmation-nonce', () => ({
   generateConfirmationNonce: vi.fn(() => 'nonce_123'),
+}));
+
+vi.mock('@/utils/priceUtils', () => ({
+  getTrustedUnitPriceForCurrency,
 }));
 
 const POSTER_12X16 = 'flat_300x400-mm-12x16-inch_170-gsm-65lb-uncoated_4-0_ver';
@@ -108,6 +113,13 @@ describe('checkout session P0 hardening', () => {
     process.env.STRIPE_SUCCESS_URL = 'https://example.com/order/confirmation';
     process.env.STRIPE_CANCEL_URL = 'https://example.com/order';
     getByCloudinaryPublicId.mockResolvedValue(null);
+    getTrustedUnitPriceForCurrency.mockReturnValue({
+      baseGBP: 999,
+      currency: 'GBP',
+      fxRate: 1,
+      converted: 999,
+      stripeUnitAmount: 99900,
+    });
     freshQuote();
     stripeCreate.mockResolvedValue({ id: 'cs_test_123', url: 'https://stripe.test/session' });
   });
@@ -120,9 +132,11 @@ describe('checkout session P0 hardening', () => {
     expect(response.status).toBe(200);
     expect(stripeCreate).toHaveBeenCalledTimes(1);
     const payload = stripeCreate.mock.calls[0][0];
+    expect(payload.line_items[0].price_data.unit_amount).toBe(2699);
     expect(payload.line_items[1].price_data.unit_amount).toBe(425);
     expect(payload.metadata.clientReportedShippingCost).toBe('0.00');
     expect(payload.metadata.serverQuotedShippingCost).toBe('4.25');
+    expect(payload.metadata.basePriceGBP).toBe('26.99');
   });
 
   it('rejects a fake shippingMethodUid before Stripe session creation', async () => {

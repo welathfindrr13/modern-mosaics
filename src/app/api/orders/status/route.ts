@@ -170,6 +170,9 @@ export async function POST(request: NextRequest) {
     
     // Attempt to cancel the order
     await gelatoClient.cancelOrder(gelatoOrderId);
+    await adminOrderOperations.update(user.uid, orderRecord.id, {
+      status: OrderStatus.CANCELED,
+    });
 
     console.info('[ORDER_CANCEL_AUDIT]', JSON.stringify({
       uidPresent: true,

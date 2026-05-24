@@ -6,7 +6,8 @@ import { useRouter } from 'next/navigation';
 import { DashboardUI } from '../dashboard-ui';
 import { OrderCard } from '@/components/dashboard/OrderCard';
 import { Button } from '@/components/ui/button';
-import { OrderStatus, LocalOrder } from '@/models/order';
+import { OrderStatus } from '@/models/order';
+import type { ClientOrder } from '@/models/firestore';
 import { useAuth } from '@/components/providers/firebase-auth-provider';
 
 interface OrderData {
@@ -17,20 +18,17 @@ interface OrderData {
   productName?: string;
 }
 
-function mapLocalOrderToOrderData(
-  localOrder: Partial<LocalOrder> & { orderId?: string; gelatoOrderId?: string }
-): OrderData | null {
-  const orderId = localOrder.id || localOrder.orderId;
-  const gelatoOrderId = localOrder.referenceId || localOrder.gelatoOrderId || orderId;
+function mapClientOrderToOrderData(order: ClientOrder): OrderData | null {
+  const orderId = order.gelatoOrderId || order.referenceId || order.id;
 
   if (!orderId) return null;
 
   return {
     orderId,
-    gelatoOrderId: gelatoOrderId || '',
-    status: localOrder.status || OrderStatus.CREATED,
-    createdAt: localOrder.createdAt || new Date().toISOString(),
-    productName: localOrder.productName,
+    gelatoOrderId: order.gelatoOrderId || order.referenceId || orderId,
+    status: order.status || OrderStatus.CREATED,
+    createdAt: order.createdAt || new Date().toISOString(),
+    productName: order.productDetails?.name,
   };
 }
 
@@ -39,6 +37,7 @@ export default function OrdersPage() {
   const { user, loading: authLoading } = useAuth();
   const [orders, setOrders] = useState<OrderData[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [cancelingByOrderId, setCancelingByOrderId] = useState<Record<string, boolean>>({});
   const isAuthenticated = !!user && !user.isAnonymous;
@@ -55,20 +54,46 @@ export default function OrdersPage() {
       return;
     }
 
-    try {
-      const storedOrders = localStorage.getItem('modernMosaicsOrders');
-      if (storedOrders) {
-        const rawOrders = JSON.parse(storedOrders) as Array<Partial<LocalOrder> & { orderId?: string; gelatoOrderId?: string }>;
-        const mappedOrders = rawOrders
-          .map(mapLocalOrderToOrderData)
+    let cancelled = false;
+
+    async function loadOrders() {
+      setLoading(true);
+      setLoadError(null);
+
+      try {
+        const response = await fetch('/api/orders/list', {
+          credentials: 'include',
+        });
+        const payload = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+          throw new Error(payload?.error || 'Failed to load orders.');
+        }
+
+        const mappedOrders = ((payload.orders || []) as ClientOrder[])
+          .map(mapClientOrderToOrderData)
           .filter((order): order is OrderData => order !== null);
-        setOrders(mappedOrders);
+
+        if (!cancelled) {
+          setOrders(mappedOrders);
+        }
+      } catch (error: any) {
+        if (!cancelled) {
+          setOrders([]);
+          setLoadError(error.message || 'Failed to load orders.');
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
-    } catch {
-      setOrders([]);
-    } finally {
-      setLoading(false);
     }
+
+    loadOrders();
+
+    return () => {
+      cancelled = true;
+    };
   }, [isAuthenticated]);
 
   const handleCancelQueuedOrder = async (orderId: string) => {
@@ -123,6 +148,11 @@ export default function OrdersPage() {
         loading ? (
           <div className="flex justify-center py-16">
             <div className="w-10 h-10 border-2 border-brand-500/30 border-t-brand-500 rounded-full animate-spin" />
+          </div>
+        ) : loadError ? (
+          <div className="glass-card p-6 text-center">
+            <h3 className="text-lg font-semibold text-white mb-2">Orders unavailable</h3>
+            <p className="text-dark-400">{loadError}</p>
           </div>
         ) : orders.length === 0 ? (
           <div className="glass-card p-10 text-center">

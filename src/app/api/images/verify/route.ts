@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, getAuthenticatedUser } from '@/lib/api-auth';
 import { getServerCloudinary } from '@/lib/cloudinary';
+import { verifyCheckoutImageOwnership } from '@/lib/checkout-image-ownership';
 import { ensurePublicId } from '@/utils/gelatoUrls';
 import {
   buildRateLimitKey,
@@ -18,6 +19,19 @@ import {
 /**
  * Verify that an image exists in Cloudinary and return minimal metadata.
  */
+function isForbiddenImagePublicId(publicId: string): boolean {
+  return (
+    publicId === 'sample' ||
+    publicId.startsWith('sample/') ||
+    publicId.startsWith('samples/') ||
+    publicId.startsWith('global/') ||
+    publicId.startsWith('temp/') ||
+    publicId.startsWith('tmp/') ||
+    publicId.startsWith('modern-mosaics-processing/') ||
+    publicId.startsWith('print_ready/')
+  );
+}
+
 export async function POST(request: NextRequest) {
   const authResponse = await requireAuth(request);
   if (authResponse) {
@@ -74,6 +88,22 @@ export async function POST(request: NextRequest) {
       );
     }
     const publicId = publicIdResult.data;
+
+    if (isForbiddenImagePublicId(publicId)) {
+      return NextResponse.json(
+        { exists: false, publicId, error: 'Image is not owned by the authenticated user.', code: 'FORBIDDEN_IMAGE' },
+        { status: 403, headers: getRateLimitHeaders(rateLimit) }
+      );
+    }
+
+    const ownership = await verifyCheckoutImageOwnership(user.uid, publicId);
+    if (!ownership.ok) {
+      return NextResponse.json(
+        { exists: false, publicId, error: ownership.reason, code: 'FORBIDDEN_IMAGE' },
+        { status: 403, headers: getRateLimitHeaders(rateLimit) }
+      );
+    }
+
     const cloudinary = await getServerCloudinary();
 
     const trySearch = async () => {

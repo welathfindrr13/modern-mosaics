@@ -37,11 +37,10 @@ export async function GET(req: NextRequest) {
     } catch (firestoreError: any) {
       console.error('[ORDERS_LIST] Firestore read failed:', firestoreError?.message || firestoreError);
       
-      // Return empty orders list if Firestore fails
       return NextResponse.json({ 
-        orders: [],
-        message: 'Firestore not available, showing empty orders list'
-      });
+        error: 'Orders are temporarily unavailable.',
+        code: 'ORDERS_UNAVAILABLE',
+      }, { status: 503 });
     }
   } catch (error: any) {
     console.error('[ORDERS_LIST] API error:', error?.message || error);
